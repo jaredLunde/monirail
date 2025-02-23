@@ -60,3 +60,88 @@ query listMetrics(
     }
   }
 }
+
+query listDeployments(
+  $projectId: String
+  $environmentId: String
+  $serviceId: String
+  $status: DeploymentStatusInput
+) {
+  deployments(
+    input: {
+      projectId: $projectId
+      environmentId: $environmentId
+      serviceId: $serviceId
+      status: $status
+    }
+  ) {
+    edges {
+      node {
+        id
+        environment {
+          id
+          name
+        }
+        service {
+          id
+          name
+        }
+        projectId
+      }
+    }
+  }
+}
+
+query getDeploymentById($deploymentId: String!) {
+  deployment(id: $deploymentId) {
+    id
+    environment {
+      id
+      name
+    }
+    service {
+      id
+      name
+    }
+    projectId
+    staticUrl
+  }
+}
+
+query getServiceById($id: String!) {
+  service(id: $id) {
+    name
+    project {
+      id
+      name
+    }
+  }
+}
+
+query getEnvironmentById($id: String!) {
+  environment(id: $id) {
+    name
+    projectId
+  }
+}
+
+query getProjectById($id: String!) {
+  project(id: $id) {
+    name
+  }
+}
+
+query listTcpProxies(
+  $environmentId: String!
+  $serviceId: String!
+) {
+  tcpProxies(
+    environmentId: $environmentId
+    serviceId: $serviceId
+  ) {
+    id
+    domain
+    proxyPort
+    deletedAt
+  }
+}

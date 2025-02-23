@@ -10,4 +10,5 @@ export default defineConfig({
 	clean: true,
 	minify: true,
 	target: tsconfig.compilerOptions.target,
+	external: ["bun:sqlite"],
 });
