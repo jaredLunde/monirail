@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <circle cx="50" cy="50" r="50" fill="currentColor"/>
+
+  <path d="M20 50 L80 50" stroke="white" stroke-width="6" transform="rotate(180, 50, 50)"/>
+  <path d="M30 35 L40 65 L50 35 L60 65 L70 35"
+        stroke="white"
+        stroke-width="6"
+        stroke-linecap="round"
+        fill="none"
+        transform="rotate(180, 50, 50)"/>
+</svg>
