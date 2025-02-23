@@ -12,20 +12,6 @@ query listDeploymentLogs(
     limit: $limit
     startDate: $startDate
   ) {
-    # attributes {
-    #   key
-    #   value
-    # }
-    # message
-    # severity
-    # tags {
-    #   deploymentId
-    #   deploymentInstanceId
-    #   environmentId
-    #   projectId
-    #   serviceId
-    #   snapshotId
-    # }
     timestamp
   }
 }
@@ -42,23 +28,6 @@ query listHTTPLogs(
     filter: ""
     limit: 10
   ) {
-    # upstreamRqDuration
-    # upstreamProto
-    # upstreamAddress
-    # txBytes
-    # srcIp
-    # rxBytes
-    # responseDetails
-    # requestId
-    # path
-    # method
-    # httpStatus
-    # host
-    # edgeRegion
-    # downstreamProto
-    # deploymentInstanceId
-    # deploymentId
-    # clientUa
     totalDuration
     timestamp
   }
@@ -68,6 +37,7 @@ query listMetrics(
   $environmentId: String!
   $serviceId: String
   $volumeId: String
+  $measurements: [MetricMeasurement!]!
   $startDate: DateTime!
   $endDate: DateTime!
   $groupBy: [MetricTag!]
@@ -76,7 +46,7 @@ query listMetrics(
     environmentId: $environmentId
     serviceId: $serviceId
     volumeId: $volumeId
-    measurements: BACKUP_USAGE_GB
+    measurements: $measurements
     startDate: $startDate
     endDate: $endDate
     groupBy: $groupBy
@@ -84,13 +54,6 @@ query listMetrics(
     sampleRateSeconds: 10
   ) {
     measurement
-    # tags {
-    #   volumeId
-    #   serviceId
-    #   projectId
-    #   environmentId
-    #   deploymentId
-    # }
     values {
       value
       ts

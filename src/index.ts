@@ -1,9 +1,7 @@
-import Database from "bun:sqlite";
 import { GraphQLClient } from "graphql-request";
 import { getSdk } from "./sdk";
 import { env } from "./env";
 
-const db = new Database(env.SQLITE_DB_PATH);
 const graphqlClient = new GraphQLClient(env.RAILWAY_API_URL, {
 	headers: {
 		"Project-Access-Token:": env.RAILWAY_PROJECT_TOKEN,
@@ -12,7 +10,9 @@ const graphqlClient = new GraphQLClient(env.RAILWAY_API_URL, {
 
 export const railway = getSdk(graphqlClient);
 
-export function monitor(opt: MonitorOptions) {}
+export function monitor(opt: MonitorOptions): Monitor {
+	return {};
+}
 
 type MonitorOptions = {
 	name: string;
@@ -34,29 +34,37 @@ type MonitorOptions = {
 			notifyOn: "above" | "above_or_equal" | "below" | "below_or_equal";
 			notifyOnNoData: boolean;
 	  }
-	// TODO: be fancy. need to store event history for this.
+	// TODO: need to store event history for this and I don't want to do the whole sqlite thing yet
 	// | {
 	// 		type: "anomaly";
 	//   }
 );
 
-export function source(opt: SourceOptions) {}
+type Monitor = {};
+
+export function source(opt: SourceOptions) {
+	return {} as SourceDeploymentLogs;
+}
 
 type SourceOptions =
 	| {
-			type: "deployment_logs";
+			serviceId?: string;
+			from: "deployment_logs";
 	  }
 	| {
-			type: "http_logs";
+			serviceId?: string;
+			from: "http_logs";
 	  }
-	| {
-			type: "metrics";
-	  };
+	| (({ volumeId?: string } | { serviceId?: string }) & {
+			from: "metrics";
+	  });
 type SourceDeploymentLogs = {};
 type SourceHttpLogs = {};
 type SourceMetrics = {};
 
-export function notify(opt: NotifyOptions) {}
+export function notify(opt: NotifyOptions): Notifier {
+	return {};
+}
 
 export type NotifyOptions =
 	| {
@@ -73,3 +81,5 @@ export type NotifyOptions =
 	  };
 
 export type Notifier = {};
+
+export function watch(interval: number, monitors: Monitor[]) {}

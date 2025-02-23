@@ -18,13 +18,18 @@
 	},
 	"homepage": "https://github.com/jaredLunde/monirail#readme",
 	"sideEffects": false,
+	"main": "dist/index.js",
 	"module": "dist/index.mjs",
-	"types": "dist/index.d.mts",
+	"types": "dist/index.d.ts",
 	"exports": {
 		"./*": {
 			"import": {
 				"types": "./dist/*.d.mts",
 				"default": "./dist/*.mjs"
+			},
+			"default": {
+				"types": "./dist/*.d.ts",
+				"default": "./dist/*.js"
 			}
 		},
 		"./package.json": "./package.json"

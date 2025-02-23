@@ -2,18 +2,16 @@
 	"$schema": "https://json.schemastore.org/tsconfig",
 	"display": "Default",
 	"compilerOptions": {
-		"target": "ES2022",
+		"target": "ES2023",
 		"module": "ESNext",
 		"declaration": false,
 		"esModuleInterop": true,
 		"strict": true,
 		"skipLibCheck": true,
 		"allowJs": true,
-		"jsx": "react-jsx",
 		"moduleResolution": "node",
 		"lib": ["ESNext"],
-		"resolveJsonModule": true,
-		"types": ["bun-types"]
+		"resolveJsonModule": true
 	},
 	"include": ["src"]
 }
