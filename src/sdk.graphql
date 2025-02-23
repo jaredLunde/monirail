@@ -1,91 +1,96 @@
-query listDeploymentLogs($deploymentId: String!) {
+query listDeploymentLogs(
+  $deploymentId: String!
+  $startDate: DateTime!
+  $endDate: DateTime!
+  $filter: String!
+  $limit: Int
+) {
   deploymentLogs(
     deploymentId: $deploymentId
-    endDate: ""
-    filter: ""
-    limit: 10
-    startDate: ""
+    endDate: $endDate
+    filter: $filter
+    limit: $limit
+    startDate: $startDate
   ) {
-    attributes {
-      key
-      value
-    }
-    message
-    severity
-    tags {
-      deploymentId
-      deploymentInstanceId
-      environmentId
-      pluginId
-      projectId
-      serviceId
-      snapshotId
-    }
+    # attributes {
+    #   key
+    #   value
+    # }
+    # message
+    # severity
+    # tags {
+    #   deploymentId
+    #   deploymentInstanceId
+    #   environmentId
+    #   projectId
+    #   serviceId
+    #   snapshotId
+    # }
     timestamp
   }
 }
 
-query listHTTPLogs($deploymentId: String!) {
+query listHTTPLogs(
+  $deploymentId: String!
+  $startDate: String!
+  $endDate: String!
+) {
   httpLogs(
-    afterDate: ""
-    afterLimit: 10
-    anchorDate: ""
-    beforeLimit: 10
     deploymentId: $deploymentId
+    startDate: $startDate
+    endDate: $endDate
     filter: ""
-    endDate: ""
     limit: 10
-    startDate: ""
-    beforeDate: ""
   ) {
-    upstreamRqDuration
-    upstreamProto
-    upstreamAddress
-    txBytes
+    # upstreamRqDuration
+    # upstreamProto
+    # upstreamAddress
+    # txBytes
+    # srcIp
+    # rxBytes
+    # responseDetails
+    # requestId
+    # path
+    # method
+    # httpStatus
+    # host
+    # edgeRegion
+    # downstreamProto
+    # deploymentInstanceId
+    # deploymentId
+    # clientUa
     totalDuration
     timestamp
-    srcIp
-    rxBytes
-    responseDetails
-    requestId
-    path
-    method
-    httpStatus
-    host
-    edgeRegion
-    downstreamProto
-    deploymentInstanceId
-    deploymentId
-    clientUa
   }
 }
 
-query listMetrics($environmentId: String!, $serviceId: String!) {
+query listMetrics(
+  $environmentId: String!
+  $serviceId: String
+  $volumeId: String
+  $startDate: DateTime!
+  $endDate: DateTime!
+  $groupBy: [MetricTag!]
+) {
   metrics(
-    measurements: BACKUP_USAGE_GB
-    startDate: ""
-    averagingWindowSeconds: 10
     environmentId: $environmentId
-    endDate: ""
-    groupBy: DEPLOYMENT_ID
-    includeDeleted: false
-    pluginId: ""
-    projectId: ""
-    sampleRateSeconds: 10
     serviceId: $serviceId
-    teamId: ""
-    volumeId: ""
-    userId: ""
+    volumeId: $volumeId
+    measurements: BACKUP_USAGE_GB
+    startDate: $startDate
+    endDate: $endDate
+    groupBy: $groupBy
+    includeDeleted: false
+    sampleRateSeconds: 10
   ) {
     measurement
-    tags {
-      volumeId
-      serviceId
-      projectId
-      pluginId
-      environmentId
-      deploymentId
-    }
+    # tags {
+    #   volumeId
+    #   serviceId
+    #   projectId
+    #   environmentId
+    #   deploymentId
+    # }
     values {
       value
       ts

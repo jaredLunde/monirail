@@ -1,3 +1,7 @@
+[env]
+SQLITE_DB_PATH = "monirail.sqlite"
+RAILWAY_API_URL = "https://backboard.railway.app/graphql/v2"
+
 [tools]
 node = "lts"
 dprint = "latest"

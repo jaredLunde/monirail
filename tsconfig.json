@@ -11,9 +11,9 @@
 		"allowJs": true,
 		"jsx": "react-jsx",
 		"moduleResolution": "node",
-		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		"lib": ["ESNext"],
 		"resolveJsonModule": true,
-		"types": ["node"]
+		"types": ["bun-types"]
 	},
 	"include": ["src"]
 }
