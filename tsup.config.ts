@@ -9,5 +9,6 @@ export default defineConfig({
 	dts: true,
 	clean: true,
 	minify: true,
+	external: ["bun:sqlite", "bun"],
 	target: tsconfig.compilerOptions.target,
 });

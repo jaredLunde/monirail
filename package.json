@@ -18,18 +18,13 @@
 	},
 	"homepage": "https://github.com/jaredLunde/monirail#readme",
 	"sideEffects": false,
-	"main": "dist/index.js",
 	"module": "dist/index.mjs",
-	"types": "dist/index.d.ts",
+	"types": "dist/index.d.mts",
 	"exports": {
 		"./*": {
 			"import": {
 				"types": "./dist/*.d.mts",
 				"default": "./dist/*.mjs"
-			},
-			"default": {
-				"types": "./dist/*.d.ts",
-				"default": "./dist/*.js"
 			}
 		},
 		"./package.json": "./package.json"
@@ -43,7 +38,7 @@
 		"@types/node": "^20.17.19",
 		"bun-types": "^1.2.3",
 		"graphql": "^16.10.0",
-		"tsup": "^2.0.3",
+		"tsup": "^8.3.6",
 		"typescript": "^5.7.3"
 	},
 	"dependencies": {

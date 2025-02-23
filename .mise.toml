@@ -8,7 +8,7 @@ dprint = "latest"
 
 [tasks."build"]
 description = "Build the project"
-run = ["mise run generate", "npm exec -- tsup"]
+run = ["mise run generate", "npm exec -- tsup src/index.ts"]
 
 [tasks."generate"]
 description = "Generate GraphQL types"
