@@ -1,0 +1,28 @@
+[tools]
+node = "lts"
+dprint = "latest"
+
+[tasks."build"]
+description = "Build the project"
+run = ["mise run generate", "npm exec -- tsup"]
+
+[tasks."generate"]
+description = "Generate GraphQL types"
+run = "npm exec -- graphql-codegen"
+
+[tasks."format"]
+description = "Format code"
+run = "dprint fmt"
+
+[tasks."check:format"]
+description = "Check formatting"
+run = "dprint check"
+
+[tasks."check:lint"]
+description = "Statically analyze the code for issues"
+run = "npm exec -- tsc --noEmit --incremental --tsBuildInfoFile .typescript/tsconfig.tsbuildinfo"
+
+[settings]
+activate_aggressive = true
+experimental = true
+yes = true

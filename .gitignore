@@ -1,0 +1,7 @@
+# Node/TypeScript
+node_modules/
+dist/
+.typescript/
+
+# Zed
+!.zed

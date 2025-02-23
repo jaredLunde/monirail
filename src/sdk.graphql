@@ -1,0 +1,94 @@
+query listDeploymentLogs($deploymentId: String!) {
+  deploymentLogs(
+    deploymentId: $deploymentId
+    endDate: ""
+    filter: ""
+    limit: 10
+    startDate: ""
+  ) {
+    attributes {
+      key
+      value
+    }
+    message
+    severity
+    tags {
+      deploymentId
+      deploymentInstanceId
+      environmentId
+      pluginId
+      projectId
+      serviceId
+      snapshotId
+    }
+    timestamp
+  }
+}
+
+query listHTTPLogs($deploymentId: String!) {
+  httpLogs(
+    afterDate: ""
+    afterLimit: 10
+    anchorDate: ""
+    beforeLimit: 10
+    deploymentId: $deploymentId
+    filter: ""
+    endDate: ""
+    limit: 10
+    startDate: ""
+    beforeDate: ""
+  ) {
+    upstreamRqDuration
+    upstreamProto
+    upstreamAddress
+    txBytes
+    totalDuration
+    timestamp
+    srcIp
+    rxBytes
+    responseDetails
+    requestId
+    path
+    method
+    httpStatus
+    host
+    edgeRegion
+    downstreamProto
+    deploymentInstanceId
+    deploymentId
+    clientUa
+  }
+}
+
+query listMetrics($environmentId: String!, $serviceId: String!) {
+  metrics(
+    measurements: BACKUP_USAGE_GB
+    startDate: ""
+    averagingWindowSeconds: 10
+    environmentId: $environmentId
+    endDate: ""
+    groupBy: DEPLOYMENT_ID
+    includeDeleted: false
+    pluginId: ""
+    projectId: ""
+    sampleRateSeconds: 10
+    serviceId: $serviceId
+    teamId: ""
+    volumeId: ""
+    userId: ""
+  ) {
+    measurement
+    tags {
+      volumeId
+      serviceId
+      projectId
+      pluginId
+      environmentId
+      deploymentId
+    }
+    values {
+      value
+      ts
+    }
+  }
+}

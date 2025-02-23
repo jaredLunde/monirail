@@ -1,0 +1,51 @@
+{
+	"name": "monirail",
+	"version": "1.0.0",
+	"description": "Monitor Railway services and notify your team when anamolies are detected",
+	"scripts": {
+		"prepublishOnly": "mise run 'check:*' && mise run build",
+		"test": "lol nah"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/jaredLunde/monirail.git"
+	},
+	"keywords": ["railway", "observability", "monitor", "notifier"],
+	"author": "Jared Lunde",
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/jaredLunde/monirail/issues"
+	},
+	"homepage": "https://github.com/jaredLunde/monirail#readme",
+	"sideEffects": false,
+	"main": "dist/index.js",
+	"module": "dist/index.mjs",
+	"types": "dist/index.d.ts",
+	"exports": {
+		"./*": {
+			"import": {
+				"types": "./dist/*.d.mts",
+				"default": "./dist/*.mjs"
+			},
+			"default": {
+				"types": "./dist/*.d.ts",
+				"default": "./dist/*.js"
+			}
+		},
+		"./package.json": "./package.json"
+	},
+	"files": ["/dist"],
+	"devDependencies": {
+		"@graphql-codegen/cli": "^5.0.5",
+		"@graphql-codegen/typescript": "^4.1.4",
+		"@graphql-codegen/typescript-graphql-request": "^6.2.0",
+		"@graphql-codegen/typescript-operations": "^4.5.0",
+		"@types/node": "^20.17.19",
+		"graphql": "^16.10.0",
+		"tsup": "^8.3.5",
+		"typescript": "^5.7.3"
+	},
+	"dependencies": {
+		"graphql-request": "^6.1.0"
+	}
+}
