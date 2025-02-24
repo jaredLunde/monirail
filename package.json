@@ -1,9 +1,9 @@
 {
 	"name": "monirail",
-	"version": "0.1.0",
+	"version": "1.0.7",
 	"description": "Monitor Railway services and notify your team when anomalies are detected",
 	"scripts": {
-		"prepublishOnly": "mise run 'check:*' && mise run build",
+		"prepublishOnly": "mise run check:format && mise run check:lint && mise run build",
 		"test": "lol nah"
 	},
 	"repository": {
@@ -30,6 +30,16 @@
 			"default": {
 				"types": "./dist/*.d.ts",
 				"default": "./dist/*.js"
+			}
+		},
+		".": {
+			"import": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.mjs"
+			},
+			"default": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
 			}
 		},
 		"./package.json": "./package.json"

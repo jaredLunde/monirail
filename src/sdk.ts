@@ -5321,7 +5321,7 @@ export type ListDeploymentsQueryVariables = Exact<{
 }>;
 
 
-export type ListDeploymentsQuery = { __typename?: 'Query', deployments: { __typename?: 'QueryDeploymentsConnection', edges: Array<{ __typename?: 'QueryDeploymentsConnectionEdge', node: { __typename?: 'Deployment', id: string, projectId: string, environment: { __typename?: 'Environment', id: string, name: string }, service: { __typename?: 'Service', id: string, name: string } } }> } };
+export type ListDeploymentsQuery = { __typename?: 'Query', deployments: { __typename?: 'QueryDeploymentsConnection', edges: Array<{ __typename?: 'QueryDeploymentsConnectionEdge', node: { __typename?: 'Deployment', id: string, projectId: string, staticUrl?: string | null, environment: { __typename?: 'Environment', id: string, name: string }, service: { __typename?: 'Service', id: string, name: string } } }> } };
 
 export type GetDeploymentByIdQueryVariables = Exact<{
   deploymentId: Scalars['String']['input'];
@@ -5412,6 +5412,7 @@ export const ListDeploymentsDocument = `
     query listDeployments($projectId: String, $environmentId: String, $serviceId: String, $status: DeploymentStatusInput) {
   deployments(
     input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, status: $status}
+    last: 1
   ) {
     edges {
       node {
@@ -5425,6 +5426,7 @@ export const ListDeploymentsDocument = `
           name
         }
         projectId
+        staticUrl
       }
     }
   }

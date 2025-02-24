@@ -1,6 +1,7 @@
 import { GraphQLClient } from "graphql-request";
 import { Database } from "bun:sqlite";
 import {
+	DeploymentStatus,
 	getSdk,
 	GetServiceByIdQuery,
 	GetServiceByIdQueryVariables,
@@ -15,7 +16,7 @@ import { env } from "./env";
 
 const graphqlClient = new GraphQLClient(env.RAILWAY_API_URL, {
 	headers: {
-		"Project-Access-Token:": env.RAILWAY_PROJECT_TOKEN,
+		"Project-Access-Token": env.RAILWAY_PROJECT_TOKEN,
 	},
 });
 
@@ -70,24 +71,25 @@ export function monitor(opt: MonitorOptions): Monitor {
 				source: opt.source,
 				threshold: opt.threshold,
 				async check() {
-					const now = new Date();
-					const past = new Date(now.getTime() - 5 * 60 * 1000); // last 5 min
-
-					const matches = await opt.source.fetch(past, now);
-
-					if (matches.length >= (opt.threshold ?? 1)) {
-						await Promise.allSettled(
-							opt.notify.map((n) =>
-								n.send({
-									type: "match",
-									monitor: this,
-									matches,
-									triggered: true,
-									timestamp: now,
-								}),
-							),
-						);
-					}
+					// TODO:
+					// const now = new Date();
+					// const past = new Date(now.getTime() - 5 * 60 * 1000); // last 5 min
+					// const matches = await opt.source.fetch(past, now);
+					// if (matches.length >= (opt.threshold ?? 1)) {
+					// 	await Promise.allSettled(
+					// 		opt.notify.map((n) =>
+					// 			n.send({
+					// 				type: "match",
+					// 				monitor: this,
+					// 				triggered: true,
+					// 				timestamp: now,
+					// 			}),
+					// 		),
+					// 	);
+					// }
+				},
+				then(onfulfilled, onrejected) {
+					return this.check().then(onfulfilled, onrejected);
 				},
 			};
 
@@ -102,43 +104,44 @@ export function monitor(opt: MonitorOptions): Monitor {
 				notifyOnNoData: opt.notifyOnNoData,
 				windowMinutes: opt.windowMinutes,
 				async check() {
-					const now = new Date();
-					const past = new Date(now.getTime() - 5 * 60 * 1000);
-
-					const values = await opt.source.fetch(past, now);
-					const avg =
-						values.reduce((sum, v) => sum + v.value, 0) / values.length;
-
-					let shouldNotify = false;
-					switch (opt.notifyOn) {
-						case "above":
-							shouldNotify = avg > opt.value;
-							break;
-						case "above_or_equal":
-							shouldNotify = avg >= opt.value;
-							break;
-						case "below":
-							shouldNotify = avg < opt.value;
-							break;
-						case "below_or_equal":
-							shouldNotify = avg <= opt.value;
-							break;
-					}
-
-					if (shouldNotify || (opt.notifyOnNoData && values.length === 0)) {
-						await Promise.allSettled(
-							opt.notify.map((n) =>
-								n.send({
-									type: "threshold",
-									monitor: this,
-									value: avg,
-									threshold: opt.value,
-									triggered: true,
-									timestamp: now,
-								}),
-							),
-						);
-					}
+					// TODO:
+					// const now = new Date();
+					// const past = new Date(now.getTime() - 5 * 60 * 1000);
+					// const values = await opt.source.fetch(past, now);
+					// const avg =
+					// 	values.reduce((sum, v) => sum + v.value, 0) / values.length;
+					// let shouldNotify = false;
+					// switch (opt.notifyOn) {
+					// 	case "above":
+					// 		shouldNotify = avg > opt.value;
+					// 		break;
+					// 	case "above_or_equal":
+					// 		shouldNotify = avg >= opt.value;
+					// 		break;
+					// 	case "below":
+					// 		shouldNotify = avg < opt.value;
+					// 		break;
+					// 	case "below_or_equal":
+					// 		shouldNotify = avg <= opt.value;
+					// 		break;
+					// }
+					// if (shouldNotify || (opt.notifyOnNoData && values.length === 0)) {
+					// 	await Promise.allSettled(
+					// 		opt.notify.map((n) =>
+					// 			n.send({
+					// 				type: "threshold",
+					// 				monitor: this,
+					// 				value: avg,
+					// 				threshold: opt.value,
+					// 				triggered: true,
+					// 				timestamp: now,
+					// 			}),
+					// 		),
+					// 	);
+					// }
+				},
+				then(onfulfilled, onrejected) {
+					return this.check().then(onfulfilled, onrejected);
 				},
 			};
 
@@ -149,21 +152,56 @@ export function monitor(opt: MonitorOptions): Monitor {
 				description: opt.description,
 				source: opt.source,
 				async check() {
+					console.log(
+						"Checking liveliness for service: ",
+						opt.source.serviceId,
+					);
 					const now = new Date();
-					const res = await fetch("");
-
-					if (!res.ok) {
+					const deploy = await railway.listDeployments({
+						environmentId:
+							opt.source.environmentId ?? env.RAILWAY_ENVIRONMENT_ID,
+						serviceId: opt.source.serviceId,
+						status: {
+							notIn: [
+								DeploymentStatus.Removed,
+								DeploymentStatus.Initializing,
+								DeploymentStatus.Deploying,
+								DeploymentStatus.NeedsApproval,
+								DeploymentStatus.Queued,
+								DeploymentStatus.Removing,
+								DeploymentStatus.Skipped,
+								DeploymentStatus.Building,
+							],
+						},
+					});
+					const [deployment] = deploy.deployments.edges;
+					const url = deployment?.node.staticUrl;
+					if (!url) {
+						console.error(
+							`No static URL for service ${opt.source.serviceId} in environment ${opt.source.environmentId}`,
+						);
+						return;
+					}
+					const res = await fetch(url);
+					console.log(
+						`Service ${opt.source.serviceId} returned status ${res.status} for: ${url}`,
+					);
+					if (shouldNotify(opt.name, !res.ok)) {
+						upsertMonitorState(opt.name, !res.ok);
 						await Promise.allSettled(
 							opt.notify.map((n) =>
 								n.send({
 									type: "liveliness",
 									monitor: this,
-									triggered: true,
+									triggered: !res.ok,
 									timestamp: now,
 								}),
 							),
 						);
 					}
+				},
+				then(onfulfilled, onrejected) {
+					return this.check().then(onfulfilled, onrejected);
 				},
 			};
 
@@ -189,6 +227,9 @@ export function monitor(opt: MonitorOptions): Monitor {
 							),
 						);
 					}
+				},
+				then(onfulfilled, onrejected) {
+					return this.check().then(onfulfilled, onrejected);
 				},
 			};
 	}
@@ -236,7 +277,6 @@ export type MonitorOptions = {
 	| {
 			type: "liveliness";
 			source: SourceService;
-			check<Response>(): Promise<Response>;
 	  }
 	| {
 			type: "custom";
@@ -259,7 +299,11 @@ export type Monitor =
 type BaseMonitor = {
 	name: string;
 	description?: string;
-	check: () => Promise<void>;
+	check(): Promise<void>;
+	then<TResult1 = void, TResult2 = never>(
+		onfulfilled?: ((value: void) => TResult1 | PromiseLike<TResult1>) | null,
+		onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
+	): Promise<TResult1 | TResult2>;
 };
 export type MonitorMatch = BaseMonitor & {
 	type: "match";
@@ -286,8 +330,59 @@ export type MonitorCustom = BaseMonitor & {
 	type: "custom";
 };
 
-export function source(opt: SourceOptions) {
-	return {} as SourceDeploymentLogs;
+export function source<O extends SourceOptions>(
+	opt: O,
+): O["type"] extends "service"
+	? SourceService
+	: O["type"] extends "deployment_logs"
+		? SourceDeploymentLogs
+		: O["type"] extends "http_logs"
+			? SourceHttpLogs
+			: O["type"] extends "metrics"
+				? SourceMetrics
+				: never {
+	switch (opt.type) {
+		case "service":
+			// @ts-expect-error
+			return {
+				type: "service",
+				fetch(
+					input: GetServiceByIdQueryVariables,
+				): Promise<GetServiceByIdQuery> {
+					return railway.getServiceById(input);
+				},
+			};
+
+		case "deployment_logs":
+			// @ts-expect-error
+			return {
+				type: "deployment_logs",
+				fetch(
+					input: ListDeploymentLogsQueryVariables,
+				): Promise<ListDeploymentLogsQuery> {
+					return railway.listDeploymentLogs(input);
+				},
+			};
+
+		case "http_logs":
+			// @ts-expect-error
+			return {
+				type: "http_logs",
+				fetch(input: ListHttpLogsQueryVariables): Promise<ListHttpLogsQuery> {
+					return {} as unknown as Promise<ListHttpLogsQuery>;
+					// return railway.listHttpLogs(input);
+				},
+			};
+
+		case "metrics":
+			// @ts-expect-error
+			return {
+				type: "metrics",
+				fetch(input: ListMetricsQueryVariables): Promise<ListMetricsQuery> {
+					return railway.listMetrics(input);
+				},
+			};
+	}
 }
 
 export type SourceOptions = {
@@ -302,16 +397,16 @@ export type SourceOptions = {
 	serviceId?: string;
 } & (
 	| {
-			from: "deployment_logs";
+			type: "deployment_logs";
 	  }
 	| {
-			from: "http_logs";
+			type: "http_logs";
 	  }
 	| {
-			from: "metrics";
+			type: "metrics";
 	  }
 	| {
-			from: "service";
+			type: "service";
 	  }
 );
 
@@ -320,35 +415,43 @@ type BaseSource = {
 	serviceId?: string;
 };
 export type SourceDeploymentLogs = BaseSource & {
+	type: "deployment_logs";
 	fetch(
 		input: ListDeploymentLogsQueryVariables,
 	): Promise<ListDeploymentLogsQuery>;
 };
 export type SourceHttpLogs = BaseSource & {
+	type: "http_logs";
 	fetch(input: ListHttpLogsQueryVariables): Promise<ListHttpLogsQuery>;
 };
 export type SourceMetrics = BaseSource & {
+	type: "metrics";
 	fetch(input: ListMetricsQueryVariables): Promise<ListMetricsQuery>;
 };
-export type SourceService = BaseSource & {
+export type SourceService = {
+	type: "service";
+	environmentId?: string;
+	serviceId: string;
 	fetch(input: GetServiceByIdQueryVariables): Promise<GetServiceByIdQuery>;
 };
 
 export function notify(opt: NotifyOptions): Notifier {
 	const monitorUrl = `https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${env.RAILWAY_SERVICE_ID}?environmentId=${env.RAILWAY_ENVIRONMENT_ID}`;
-	function getEnv(payload: NotificationPayload) {
-		let serviceName: string;
-		let projectName: string;
-		let environmentName: string;
-		const source = "source" in payload.monitor ? payload.monitor.source : null;
-		const environmentId = source?.environmentId ?? env.RAILWAY_ENVIRONMENT_ID;
-		const serviceId = source?.serviceId;
-		railway.getEnvironmentById({ id: environmentId });
-	}
+	// function getEnv(payload: NotificationPayload) {
+	// 	let serviceName: string;
+	// 	let projectName: string;
+	// 	let environmentName: string;
+	// 	const source = "source" in payload.monitor ? payload.monitor.source : null;
+	// 	const environmentId = source?.environmentId ?? env.RAILWAY_ENVIRONMENT_ID;
+	// 	const serviceId = source?.serviceId;
+	// 	railway.getEnvironmentById({ id: environmentId });
+	// }
+
 	switch (opt.type) {
 		case "webhook":
 			return {
 				async send(payload) {
+					console.log("Notifying via webhook: ", payload);
 					const res = await fetch(opt.url, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
@@ -774,6 +877,15 @@ type PagerDutyEvent = {
 };
 
 /**
+ * Check the monitors in parallel and log any failures.
+ * @param monitors - The monitors to check
+ * @returns A promise that resolves when all monitors have been checked
+ */
+export function check(monitors: Monitor[]) {
+	return Promise.allSettled(monitors.map((m) => m.check()));
+}
+
+/**
  * Watch the monitors and check them at the given interval.
  * @warn **DO NOT USE THIS IN A CRON**
  * @param interval - The interval in minutes to check the monitors
@@ -788,15 +900,7 @@ export function watch(
 
 	(async () => {
 		while (running) {
-			const results = await Promise.allSettled(monitors.map((m) => m.check()));
-
-			// Log any failures
-			results.forEach((result, i) => {
-				if (result.status === "rejected") {
-					console.error(`Monitor ${i} check failed:`, result.reason);
-				}
-			});
-
+			await check(monitors);
 			await new Promise((resolve) =>
 				setTimeout(resolve, intervalMinutes * 60 * 1000),
 			);
