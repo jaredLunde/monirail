@@ -3403,8 +3403,8 @@ export type QueryMetricsArgs = {
   serviceId?: InputMaybe<Scalars['String']['input']>;
   startDate: Scalars['DateTime']['input'];
   teamId?: InputMaybe<Scalars['String']['input']>;
-  userId?: InputMaybe<Scalars['String']['input']>;
   volumeId?: InputMaybe<Scalars['String']['input']>;
+  workspaceId?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -5318,10 +5318,11 @@ export type ListDeploymentsQueryVariables = Exact<{
   environmentId?: InputMaybe<Scalars['String']['input']>;
   serviceId?: InputMaybe<Scalars['String']['input']>;
   status?: InputMaybe<DeploymentStatusInput>;
+  last?: InputMaybe<Scalars['Int']['input']>;
 }>;
 
 
-export type ListDeploymentsQuery = { __typename?: 'Query', deployments: { __typename?: 'QueryDeploymentsConnection', edges: Array<{ __typename?: 'QueryDeploymentsConnectionEdge', node: { __typename?: 'Deployment', id: string, projectId: string, staticUrl?: string | null, environment: { __typename?: 'Environment', id: string, name: string }, service: { __typename?: 'Service', id: string, name: string } } }> } };
+export type ListDeploymentsQuery = { __typename?: 'Query', deployments: { __typename?: 'QueryDeploymentsConnection', edges: Array<{ __typename?: 'QueryDeploymentsConnectionEdge', node: { __typename?: 'Deployment', id: string, projectId: string, staticUrl?: string | null, updatedAt: any, environment: { __typename?: 'Environment', id: string, name: string }, service: { __typename?: 'Service', id: string, name: string } } }> } };
 
 export type GetDeploymentByIdQueryVariables = Exact<{
   deploymentId: Scalars['String']['input'];
@@ -5409,10 +5410,10 @@ export const ListMetricsDocument = `
 }
     `;
 export const ListDeploymentsDocument = `
-    query listDeployments($projectId: String, $environmentId: String, $serviceId: String, $status: DeploymentStatusInput) {
+    query listDeployments($projectId: String, $environmentId: String, $serviceId: String, $status: DeploymentStatusInput, $last: Int) {
   deployments(
     input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, status: $status}
-    last: 1
+    last: $last
   ) {
     edges {
       node {
@@ -5427,6 +5428,7 @@ export const ListDeploymentsDocument = `
         }
         projectId
         staticUrl
+        updatedAt
       }
     }
   }

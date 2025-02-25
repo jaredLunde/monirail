@@ -1,6 +1,6 @@
 {
 	"name": "monirail",
-	"version": "1.0.7",
+	"version": "1.0.10",
 	"description": "Monitor Railway services and notify your team when anomalies are detected",
 	"scripts": {
 		"prepublishOnly": "mise run check:format && mise run check:lint && mise run build",

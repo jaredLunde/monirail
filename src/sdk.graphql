@@ -66,6 +66,7 @@ query listDeployments(
   $environmentId: String
   $serviceId: String
   $status: DeploymentStatusInput
+  $last: Int
 ) {
   deployments(
     input: {
@@ -74,7 +75,7 @@ query listDeployments(
       serviceId: $serviceId
       status: $status
     }
-    last: 1
+    last: $last
   ) {
     edges {
       node {
@@ -89,6 +90,7 @@ query listDeployments(
         }
         projectId
         staticUrl
+        updatedAt
       }
     }
   }
