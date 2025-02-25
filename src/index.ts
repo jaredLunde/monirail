@@ -35,30 +35,26 @@ export const railway = getSdk(graphqlClient);
 function shouldNotify(name: string, triggered: boolean): boolean {
 	const row = db
 		.prepare("SELECT triggered FROM monitor_states WHERE name = ?")
-		.get(name) as { triggered: boolean } | undefined;
+		.get(name) as { triggered: 0 | 1 } | undefined;
 
 	if (!row) {
 		return triggered;
 	}
 
-	if (row.triggered !== triggered) {
-		return true;
-	}
-
-	return false;
+	return Boolean(row.triggered) !== triggered;
 }
+
+const upsertMonitorStateStmt = db.prepare(`
+             INSERT INTO monitor_states (name, triggered, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(name) DO UPDATE SET
+               triggered = ?,
+               updated_at = ?
+           `);
 
 function upsertMonitorState(name: string, triggered: boolean) {
 	const now = Date.now();
-	return db
-		.prepare(`
-              INSERT INTO monitor_states (name, triggered, updated_at)
-              VALUES (?, ?, ?)
-              ON CONFLICT(name) DO UPDATE SET
-                triggered = ?,
-                updated_at = ?
-            `)
-		.run(name, triggered, now, triggered, now);
+	return upsertMonitorStateStmt.run(name, triggered, now, triggered, now);
 }
 
 export function monitor(opt: MonitorOptions): Monitor {
@@ -107,8 +103,8 @@ export function monitor(opt: MonitorOptions): Monitor {
 							return opt.source.fetch({
 								filter: opt.filter,
 								deploymentId: deploy.id,
-								startDate: past.toISOString(),
-								endDate: now.toISOString(),
+								startDate: past.toJSON(),
+								endDate: now.toJSON(),
 							});
 						}),
 					);
@@ -123,6 +119,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 						`Found ${matches.length} matches for ${opt.filter} in the last ${timeWindow} minutes`,
 					);
 					if (matches.length >= threshold && shouldNotify(opt.name, true)) {
+						upsertMonitorState(opt.name, true);
 						await Promise.allSettled(
 							opt.notify.map((n) =>
 								n.send({
@@ -138,6 +135,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 						matches.length < threshold &&
 						shouldNotify(opt.name, false)
 					) {
+						upsertMonitorState(opt.name, false);
 						await Promise.allSettled(
 							opt.notify.map((n) =>
 								n.send({
@@ -250,9 +248,9 @@ export function monitor(opt: MonitorOptions): Monitor {
 					console.log(
 						`Service ${serviceId} in environment ${environmentId} returned status ${res.status} for: ${url}`,
 					);
-
-					if (shouldNotify(opt.name, !res.ok)) {
-						upsertMonitorState(opt.name, !res.ok);
+					const triggered = !res.ok;
+					if (shouldNotify(opt.name, triggered)) {
+						upsertMonitorState(opt.name, triggered);
 						await Promise.allSettled(
 							opt.notify.map((n) =>
 								n.send({
@@ -575,7 +573,7 @@ export function notify(opt: NotifyOptions): Notifier {
 								title: payload.monitor.name,
 								description: `Found ${payload.matches.length} matches`,
 								color,
-								timestamp: payload.timestamp.toISOString(),
+								timestamp: payload.timestamp.toJSON(),
 								fields: [
 									{
 										name: "Matches",
@@ -592,7 +590,7 @@ export function notify(opt: NotifyOptions): Notifier {
 									? `Value ${payload.value} crossed threshold ${payload.threshold}`
 									: `Value ${payload.value} is back to normal`,
 								color,
-								timestamp: payload.timestamp.toISOString(),
+								timestamp: payload.timestamp.toJSON(),
 								fields: [
 									{
 										name: "Value",
@@ -612,7 +610,7 @@ export function notify(opt: NotifyOptions): Notifier {
 								title: payload.monitor.name,
 								description: `Service is ${status}`,
 								color,
-								timestamp: payload.timestamp.toISOString(),
+								timestamp: payload.timestamp.toJSON(),
 								fields: [
 									{
 										name: "Status",
@@ -627,7 +625,7 @@ export function notify(opt: NotifyOptions): Notifier {
 								title: payload.monitor.name,
 								description: `Custom monitor ${payload.triggered ? "triggered" : "resolved"}`,
 								color,
-								timestamp: payload.timestamp.toISOString(),
+								timestamp: payload.timestamp.toJSON(),
 								fields: [
 									{
 										name: "Data",
@@ -775,7 +773,7 @@ export function notify(opt: NotifyOptions): Notifier {
 							summary,
 							source: "monirail",
 							severity: opt.severity,
-							timestamp: payload.timestamp.toISOString(),
+							timestamp: payload.timestamp.toJSON(),
 							component: opt.component,
 							group: opt.group ?? env.RAILWAY_PROJECT_NAME,
 						},
