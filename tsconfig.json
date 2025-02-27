@@ -12,6 +12,7 @@
 		"moduleResolution": "node",
 		"lib": ["ESNext"],
 		"resolveJsonModule": true,
+		"verbatimModuleSyntax": true,
 		"types": ["bun-types"]
 	},
 	"include": ["src"]

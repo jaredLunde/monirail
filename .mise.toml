@@ -18,7 +18,7 @@ run = ["mise run generate", "npm exec -- tsup src/index.ts"]
 
 [tasks."generate"]
 description = "Generate GraphQL types"
-run = "npm exec -- graphql-codegen"
+run = ["npm exec -- graphql-codegen", "mise run format"]
 
 [tasks."format"]
 description = "Format code"

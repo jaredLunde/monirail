@@ -16,17 +16,59 @@ query listDeploymentLogs(
   }
 }
 
+query listEnvironments($projectId: String!, $after: String, $last: Int) {
+  environments(projectId: $projectId, after: $after, last: $last) {
+    edges {
+      node {
+        id
+        name
+      }
+    }
+    pageInfo {
+      endCursor
+      hasNextPage
+    }
+  }
+}
+
+query listEnvironmentLogs(
+  $environmentId: String!
+  $startDate: String!
+  $endDate: String!
+  $filter: String!
+  $limit: Int
+) {
+  environmentLogs(
+    environmentId: $environmentId
+    filter: $filter
+    anchorDate: $endDate
+    afterDate: $endDate
+    beforeDate: $startDate
+    beforeLimit: $limit
+    afterLimit: 0
+  ) {
+    timestamp
+  }
+}
+
 query listHTTPLogs(
   $deploymentId: String!
   $startDate: String!
   $endDate: String!
+  $filter: String!
+  $limit: Int
 ) {
   httpLogs(
     deploymentId: $deploymentId
+    filter: $filter
+    anchorDate: $endDate
+    afterDate: $endDate
+    beforeDate: $startDate
+    beforeLimit: $limit
     startDate: $startDate
     endDate: $endDate
-    filter: ""
-    limit: 10
+    afterLimit: 0
+    limit: $limit
   ) {
     totalDuration
     timestamp
@@ -66,7 +108,7 @@ query listDeployments(
   $environmentId: String
   $serviceId: String
   $status: DeploymentStatusInput
-  $last: Int
+  $first: Int
 ) {
   deployments(
     input: {
@@ -75,7 +117,7 @@ query listDeployments(
       serviceId: $serviceId
       status: $status
     }
-    last: $last
+    first: $first
   ) {
     edges {
       node {
@@ -90,6 +132,7 @@ query listDeployments(
         }
         projectId
         staticUrl
+        status
         updatedAt
       }
     }
@@ -114,6 +157,7 @@ query getDeploymentById($deploymentId: String!) {
 
 query getServiceById($id: String!) {
   service(id: $id) {
+    id
     name
     project {
       id
@@ -124,13 +168,23 @@ query getServiceById($id: String!) {
 
 query getEnvironmentById($id: String!) {
   environment(id: $id) {
+    id
     name
     projectId
+    serviceInstances {
+      edges {
+        node {
+          serviceId
+          serviceName
+        }
+      }
+    }
   }
 }
 
 query getProjectById($id: String!) {
   project(id: $id) {
+    id
     name
   }
 }

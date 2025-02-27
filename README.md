@@ -18,5 +18,5 @@ Monitor Railway services and notify your team when anomalies are detected
 ## To do
 
 - [ ] Anomaly detection
-- [ ] Usage monitoring
+- [ ] Usage monitoring (spend)
 - [ ] TCP proxy liveliness check

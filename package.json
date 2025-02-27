@@ -1,6 +1,6 @@
 {
 	"name": "monirail",
-	"version": "1.0.10",
+	"version": "1.0.11",
 	"description": "Monitor Railway services and notify your team when anomalies are detected",
 	"scripts": {
 		"prepublishOnly": "mise run check:format && mise run check:lint && mise run build",
@@ -46,17 +46,16 @@
 	},
 	"files": ["/dist"],
 	"devDependencies": {
+		"@graphql-codegen/add": "^5.0.3",
 		"@graphql-codegen/cli": "^5.0.5",
+		"@graphql-codegen/typed-document-node": "^5.0.15",
 		"@graphql-codegen/typescript": "^4.1.4",
-		"@graphql-codegen/typescript-graphql-request": "^6.2.0",
+		"@graphql-codegen/typescript-document-nodes": "^4.0.15",
 		"@graphql-codegen/typescript-operations": "^4.5.0",
 		"@types/node": "^20.17.19",
 		"bun-types": "^1.2.3",
 		"graphql": "^16.10.0",
 		"tsup": "^8.3.6",
 		"typescript": "^5.7.3"
-	},
-	"dependencies": {
-		"graphql-request": "^6.1.0"
 	}
 }

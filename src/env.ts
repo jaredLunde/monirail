@@ -4,7 +4,7 @@ type Env = {
 	NODE_ENV: "development" | "production";
 	SQLITE_DB_FILE: string;
 	RAILWAY_API_URL: string;
-	RAILWAY_PROJECT_TOKEN: string;
+	RAILWAY_API_TOKEN: string;
 	RAILWAY_PROJECT_ID: string;
 	RAILWAY_PROJECT_NAME: string;
 	RAILWAY_ENVIRONMENT_ID: string;
@@ -20,7 +20,7 @@ export const env: Env = {
 	SQLITE_DB_FILE: process.env.SQLITE_DB_FILE || "/data/monirail.sqlite",
 	RAILWAY_API_URL:
 		process.env.RAILWAY_API_URL || "https://backboard.railway.app/graphql/v2",
-	RAILWAY_PROJECT_TOKEN: process.env.RAILWAY_PROJECT_TOKEN ?? "",
+	RAILWAY_API_TOKEN: process.env.RAILWAY_API_TOKEN || "",
 	RAILWAY_PROJECT_ID: process.env.RAILWAY_PROJECT_ID ?? "",
 	RAILWAY_PROJECT_NAME: process.env.RAILWAY_PROJECT_NAME ?? "",
 	RAILWAY_ENVIRONMENT_ID: process.env.RAILWAY_ENVIRONMENT_ID ?? "",

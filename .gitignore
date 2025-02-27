@@ -5,3 +5,5 @@ dist/
 
 # Zed
 !.zed
+test-code.ts
+monirail.sqlite

@@ -1,24 +1,18 @@
-import { GraphQLClient } from "graphql-request";
 import { Database } from "bun:sqlite";
-import {
-	DeploymentStatus,
-	getSdk,
+import { createClient, createSdk } from "./client";
+import { DeploymentStatus } from "./types";
+import type {
+	GetEnvironmentByIdQuery,
 	GetServiceByIdQuery,
 	GetServiceByIdQueryVariables,
-	ListDeploymentLogsQuery,
-	ListDeploymentLogsQueryVariables,
+	ListEnvironmentLogsQuery,
+	ListEnvironmentLogsQueryVariables,
 	ListHttpLogsQuery,
 	ListHttpLogsQueryVariables,
 	ListMetricsQuery,
 	ListMetricsQueryVariables,
-} from "./sdk";
+} from "./types";
 import { env } from "./env";
-
-const graphqlClient = new GraphQLClient(env.RAILWAY_API_URL, {
-	headers: {
-		"Project-Access-Token": env.RAILWAY_PROJECT_TOKEN,
-	},
-});
 
 const db = new Database(env.SQLITE_DB_FILE);
 
@@ -30,7 +24,13 @@ db.run(`
   );
 `);
 
-export const railway = getSdk(graphqlClient);
+export const railway = createSdk(
+	createClient(env.RAILWAY_API_URL, {
+		headers: {
+			Authorization: `Bearer ${env.RAILWAY_API_TOKEN}`,
+		},
+	}),
+);
 
 function shouldNotify(name: string, triggered: boolean): boolean {
 	const row = db
@@ -45,104 +45,208 @@ function shouldNotify(name: string, triggered: boolean): boolean {
 }
 
 const upsertMonitorStateStmt = db.prepare(`
-             INSERT INTO monitor_states (name, triggered, updated_at)
-             VALUES (?, ?, ?)
-             ON CONFLICT(name) DO UPDATE SET
-               triggered = ?,
-               updated_at = ?
-           `);
+  INSERT INTO monitor_states (name, triggered, updated_at)
+  VALUES (?, ?, ?)
+  ON CONFLICT(name) DO UPDATE SET
+    triggered = ?,
+    updated_at = ?
+`);
+const MAX_LOG_LIMIT = 5000;
 
 function upsertMonitorState(name: string, triggered: boolean) {
 	const now = Date.now();
-	return upsertMonitorStateStmt.run(name, triggered, now, triggered, now);
+	return upsertMonitorStateStmt.run(
+		name,
+		Number(triggered),
+		now,
+		Number(triggered),
+		now,
+	);
 }
 
-export function monitor(opt: MonitorOptions): Monitor {
-	const environmentId = "source" in opt ? opt.source.environmentId : undefined;
-	const serviceId = "source" in opt ? opt.source.serviceId : undefined;
+const environmentIdCache = new Map<string, Promise<string>>();
 
+async function getEnvironmentId(maybeEnvironmentId: string) {
+	if (isUuidRe.test(maybeEnvironmentId)) {
+		return maybeEnvironmentId;
+	}
+
+	if (environmentIdCache.has(maybeEnvironmentId)) {
+		return environmentIdCache.get(maybeEnvironmentId)!;
+	}
+
+	const envIdPromise = new Promise<string>(async (resolve, reject) => {
+		let envId: string | undefined;
+		let after: string | undefined;
+
+		while (!envId) {
+			const envs = await railway.listEnvironments({
+				projectId: env.RAILWAY_PROJECT_ID,
+				last: 500,
+				after,
+			});
+
+			if (!envs.environments.edges.length) {
+				reject(
+					`No environments found for project ${env.RAILWAY_PROJECT_ID} with name: "${maybeEnvironmentId}"`,
+				);
+			}
+			const environment = envs.environments.edges.find(
+				(e) => e.node.name === maybeEnvironmentId,
+			);
+			if (environment) {
+				envId = environment.node.id;
+			} else if (!envs.environments.pageInfo.hasNextPage) {
+				reject(
+					`No environments found for project ${env.RAILWAY_PROJECT_ID} with name: "${maybeEnvironmentId}"`,
+				);
+			} else {
+				after = envs.environments.pageInfo.endCursor ?? undefined;
+			}
+		}
+
+		resolve(envId);
+	});
+
+	environmentIdCache.set(maybeEnvironmentId, envIdPromise);
+	return envIdPromise;
+}
+
+const environmentCache = new Map<string, Promise<GetEnvironmentByIdQuery>>();
+
+async function getEnvironment(maybeEnvironmentId: string) {
+	const environmentId = await getEnvironmentId(maybeEnvironmentId);
+	if (environmentCache.has(environmentId)) {
+		const env = await environmentCache.get(environmentId)!;
+		return env.environment;
+	}
+	const envPromise = railway.getEnvironmentById({ id: environmentId });
+	environmentCache.set(environmentId, envPromise);
+	const env = await envPromise;
+	return env.environment;
+}
+
+const isUuidRe =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function monitor(opt: MonitorOptions): Monitor {
 	switch (opt.type) {
 		case "match":
-			const threshold = opt.threshold ?? 1;
 			const timeWindow = opt.timeWindow ?? 5;
+
 			return {
 				type: "match",
 				name: opt.name,
 				description: opt.description,
 				source: opt.source,
-				threshold,
 				timeWindow,
 				async check() {
+					const source = await opt.source;
+					const environment = source.environment;
+					const services = source.services;
 					console.log(
-						`Checking for matches for service ${serviceId} in environment ${environmentId}`,
+						`Checking for matches for environment ${environment.name}`,
 					);
 					const now = new Date();
 					const past = new Date(now.getTime() - timeWindow * 60 * 1000); // last 5 min
-					const deploys = (
-						await railway.listDeployments({
-							environmentId,
-							serviceId,
-							status: {
-								notIn: [
-									DeploymentStatus.Initializing,
-									DeploymentStatus.Deploying,
-									DeploymentStatus.NeedsApproval,
-									DeploymentStatus.Queued,
-									DeploymentStatus.Skipped,
-									DeploymentStatus.Building,
-								],
-							},
-							last: 20,
-						})
-					).deployments.edges
-						.filter((deploy) => new Date(deploy.node.updatedAt) > past)
-						.map((deploy) => deploy.node);
+					let matches: unknown[] = [];
 
-					const results = await Promise.allSettled(
-						deploys.map((deploy) => {
-							return opt.source.fetch({
-								filter: opt.filter,
-								deploymentId: deploy.id,
-								startDate: past.toJSON(),
-								endDate: now.toJSON(),
-							});
-						}),
-					);
+					if (source.type === "http_logs") {
+						matches = (
+							await Promise.all(
+								services.map(async (service) => {
+									const deploys = (
+										await railway.listDeployments({
+											environmentId: environment.id,
+											serviceId: service.serviceId,
+											status: {
+												in: [
+													DeploymentStatus.Removed,
+													DeploymentStatus.Crashed,
+													DeploymentStatus.Success,
+													DeploymentStatus.Sleeping,
+												],
+											},
+											first: 10,
+										})
+									).deployments.edges
+										.filter(
+											(deploy) =>
+												[
+													DeploymentStatus.Success,
+													DeploymentStatus.Sleeping,
+												].includes(deploy.node.status as any) ||
+												new Date(deploy.node.updatedAt) > past,
+										)
+										.map((deploy) => deploy.node);
 
-					const matches = results
-						.filter((result) => result.status === "fulfilled")
-						.map((result) => result.value.deploymentLogs)
-						.flat()
-						.filter((match) => match);
+									const results = await Promise.all(
+										deploys.map((deploy) => {
+											return source.fetch({
+												filter: opt.filter,
+												deploymentId: deploy.id,
+												startDate: past.toJSON(),
+												endDate: now.toJSON(),
+												limit: 1,
+											});
+										}),
+									);
+									return results.flatMap((result) => result.httpLogs);
+								}),
+							)
+						).flat();
+					} else {
+						const results = await source.fetch({
+							filter: `( ${services.map((service) => `@service:${service.serviceId}`).join(" OR ")} ) AND ${opt.filter}`,
+							environmentId: environment.id,
+							startDate: past.toJSON(),
+							endDate: now.toJSON(),
+							limit: 1,
+						});
+						matches = results.environmentLogs;
+					}
 
 					console.log(
-						`Found ${matches.length} matches for ${opt.filter} in the last ${timeWindow} minutes`,
+						`Found a match for ${opt.filter} in the last ${timeWindow} minutes`,
 					);
-					if (matches.length >= threshold && shouldNotify(opt.name, true)) {
+					if (matches.length >= 1 && shouldNotify(opt.name, true)) {
 						upsertMonitorState(opt.name, true);
 						await Promise.allSettled(
 							opt.notify.map((n) =>
 								n.send({
 									type: "match",
-									monitor: this,
+									monitor: {
+										name: this.name,
+										description: this.description,
+										timeWindow: this.timeWindow,
+										source: {
+											type: "environment_logs",
+											environment,
+											services,
+										},
+									},
 									triggered: true,
-									matches,
 									timestamp: now,
 								}),
 							),
 						);
-					} else if (
-						matches.length < threshold &&
-						shouldNotify(opt.name, false)
-					) {
+					} else if (matches.length < 1 && shouldNotify(opt.name, false)) {
 						upsertMonitorState(opt.name, false);
 						await Promise.allSettled(
 							opt.notify.map((n) =>
 								n.send({
 									type: "match",
-									monitor: this,
+									monitor: {
+										name: this.name,
+										description: this.description,
+										timeWindow: this.timeWindow,
+										source: {
+											type: "environment_logs",
+											environment,
+											services,
+										},
+									},
 									triggered: false,
-									matches,
 									timestamp: now,
 								}),
 							),
@@ -155,6 +259,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 			};
 
 		case "threshold":
+			const threshold = opt.value ?? 1;
 			const timeWindow2 = opt.timeWindow ?? 5;
 			return {
 				type: "threshold",
@@ -166,6 +271,13 @@ export function monitor(opt: MonitorOptions): Monitor {
 				notifyOnNoData: opt.notifyOnNoData,
 				timeWindow: timeWindow2,
 				async check() {
+					const source = await opt.source;
+					if (source.type !== "metrics" && threshold > MAX_LOG_LIMIT) {
+						throw new Error(
+							`${opt.name}: threshold cannot be greater than ${MAX_LOG_LIMIT}`,
+						);
+					}
+
 					// TODO:
 					// const now = new Date();
 					// const past = new Date(now.getTime() - 5 * 60 * 1000);
@@ -213,55 +325,70 @@ export function monitor(opt: MonitorOptions): Monitor {
 				name: opt.name,
 				description: opt.description,
 				source: opt.source,
+				path: opt.path,
 				async check() {
-					console.log(
-						`Checking liveliness for service ${serviceId} in environment ${environmentId}`,
+					const source = await opt.source;
+					const environment = source.environment;
+					const services = source.services;
+
+					await Promise.allSettled(
+						services.map(async (service) => {
+							console.log(
+								`Checking liveliness for service "${service.serviceName}" in environment "${environment.name}"`,
+							);
+							const now = new Date();
+							const deploy = await railway.listDeployments({
+								environmentId: environment.id,
+								serviceId: service.serviceId,
+								status: {
+									in: [
+										DeploymentStatus.Sleeping,
+										DeploymentStatus.Success,
+										DeploymentStatus.Crashed,
+									],
+								},
+								first: 1,
+							});
+							const [deployment] = deploy.deployments.edges;
+							const url = deployment?.node.staticUrl;
+							if (!url) {
+								console.error(
+									`No static URL for service "${service.serviceName}" in environment "${environment.name}"`,
+								);
+								return;
+							}
+							const u = new URL(opt.path ?? "/", `https://${url}`);
+							const res = await fetch(u.toString());
+							console.log(
+								`Service "${service.serviceName}" in environment "${environment.name}" returned status ${res.status} for: ${url}`,
+							);
+							const triggered = !res.ok;
+							if (
+								shouldNotify(`${opt.name}/${service.serviceName}`, triggered)
+							) {
+								upsertMonitorState(opt.name, triggered);
+								await Promise.allSettled(
+									opt.notify.map((n) =>
+										n.send({
+											type: "liveliness",
+											monitor: {
+												name: this.name,
+												description: this.description,
+												path: this.path,
+												source: {
+													type: "service",
+													environment,
+													services,
+												},
+											},
+											triggered: !res.ok,
+											timestamp: now,
+										}),
+									),
+								);
+							}
+						}),
 					);
-					const now = new Date();
-					const deploy = await railway.listDeployments({
-						environmentId,
-						serviceId,
-						status: {
-							notIn: [
-								DeploymentStatus.Removed,
-								DeploymentStatus.Initializing,
-								DeploymentStatus.Deploying,
-								DeploymentStatus.NeedsApproval,
-								DeploymentStatus.Queued,
-								DeploymentStatus.Removing,
-								DeploymentStatus.Skipped,
-								DeploymentStatus.Building,
-							],
-						},
-						last: 1,
-					});
-					const [deployment] = deploy.deployments.edges;
-					const url = deployment?.node.staticUrl;
-					if (!url) {
-						console.error(
-							`No static URL for service ${serviceId} in environment ${environmentId}`,
-						);
-						return;
-					}
-					const u = new URL(opt.path ?? "/", `https://${url}`);
-					const res = await fetch(u);
-					console.log(
-						`Service ${serviceId} in environment ${environmentId} returned status ${res.status} for: ${url}`,
-					);
-					const triggered = !res.ok;
-					if (shouldNotify(opt.name, triggered)) {
-						upsertMonitorState(opt.name, triggered);
-						await Promise.allSettled(
-							opt.notify.map((n) =>
-								n.send({
-									type: "liveliness",
-									monitor: this,
-									triggered: !res.ok,
-									timestamp: now,
-								}),
-							),
-						);
-					}
 				},
 				then(onfulfilled, onrejected) {
 					return this.check().then(onfulfilled, onrejected);
@@ -273,7 +400,10 @@ export function monitor(opt: MonitorOptions): Monitor {
 				type: "custom",
 				name: opt.name,
 				description: opt.description,
+				// @ts-expect-error: not sure
+				source: opt.source,
 				async check() {
+					const source = await opt.source;
 					const now = new Date();
 					const { triggered, ...data } = await opt.check();
 
@@ -282,7 +412,11 @@ export function monitor(opt: MonitorOptions): Monitor {
 							opt.notify.map((n) =>
 								n.send({
 									type: "custom",
-									monitor: this,
+									monitor: {
+										name: this.name,
+										description: this.description,
+										source,
+									},
 									triggered: true,
 									data,
 									timestamp: now,
@@ -315,16 +449,11 @@ export type MonitorOptions = {
 	 */
 	{
 			type: "match";
-			source: SourceDeploymentLogs;
+			source: Promise<SourceEnvironmentLogs | SourceHttpLogs>;
 			/**
 			 * THe filter to match events against
 			 */
 			filter: string;
-			/**
-			 * The minimum number of events matching the filter to trigger a notification
-			 * @default 1
-			 */
-			threshold?: number;
 			/**
 			 * The duration in minutes to sample events over starting from the current time
 			 * @default 5
@@ -332,14 +461,17 @@ export type MonitorOptions = {
 			timeWindow?: number;
 	  }
 	/**
-	 * Aggregate event data over time. When the results of the aggregation cross a threshold,
+	 * Aggregate event data over time. When the results of a metric cross a threshold,
 	 * send alert.
 	 */
 	| {
 			type: "threshold";
-			source: SourceMetrics | SourceHttpLogs;
+			source: Promise<SourceMetrics | SourceEnvironmentLogs | SourceHttpLogs>;
 			value: number;
 			notifyOn: "above" | "above_or_equal" | "below" | "below_or_equal";
+			/**
+			 * Whether to notify when there is no data returned from the source
+			 */
 			notifyOnNoData: boolean;
 			/**
 			 * The window of time to aggregate over in minutes
@@ -349,7 +481,7 @@ export type MonitorOptions = {
 	  }
 	| {
 			type: "liveliness";
-			source: SourceService;
+			source: Promise<SourceService>;
 			/**
 			 * The path to check for liveliness
 			 * @default "/"
@@ -358,14 +490,13 @@ export type MonitorOptions = {
 	  }
 	| {
 			type: "custom";
+			source: Promise<
+				SourceMetrics | SourceEnvironmentLogs | SourceHttpLogs | SourceService
+			>;
 			check<Data extends Record<string, unknown>>(): Promise<
 				Data & { triggered: boolean }
 			>;
 	  }
-	// TODO: need to store event history for this and I don't want to do the whole sqlite thing yet
-	// | {
-	// 		type: "anomaly";
-	//   }
 );
 
 export type Monitor =
@@ -385,13 +516,12 @@ type BaseMonitor = {
 };
 export type MonitorMatch = BaseMonitor & {
 	type: "match";
-	source: SourceDeploymentLogs;
-	threshold: number;
+	source: Promise<SourceEnvironmentLogs | SourceHttpLogs>;
 	timeWindow: number;
 };
 export type MonitorThreshold = BaseMonitor & {
 	type: "threshold";
-	source: SourceMetrics | SourceHttpLogs;
+	source: Promise<SourceMetrics | SourceEnvironmentLogs | SourceHttpLogs>;
 	value: number;
 	notifyOn: "above" | "above_or_equal" | "below" | "below_or_equal";
 	notifyOnNoData: boolean;
@@ -403,30 +533,55 @@ export type MonitorThreshold = BaseMonitor & {
 };
 export type MonitorLiveliness = BaseMonitor & {
 	type: "liveliness";
-	source: SourceService;
+	source: Promise<SourceService>;
+	path?: string;
 };
 export type MonitorCustom = BaseMonitor & {
 	type: "custom";
+	source: Promise<SourceMetrics | SourceEnvironmentLogs | SourceHttpLogs>;
 };
 
-export function source<O extends SourceOptions>(
+export async function source<O extends SourceOptions>(
 	opt: O,
-): O["type"] extends "service"
-	? SourceService
-	: O["type"] extends "deployment_logs"
-		? SourceDeploymentLogs
-		: O["type"] extends "http_logs"
-			? SourceHttpLogs
-			: O["type"] extends "metrics"
-				? SourceMetrics
-				: never {
+): Promise<
+	O["type"] extends "service"
+		? SourceService
+		: O["type"] extends "environment_logs"
+			? SourceEnvironmentLogs
+			: O["type"] extends "http_logs"
+				? SourceHttpLogs
+				: O["type"] extends "metrics"
+					? SourceMetrics
+					: never
+> {
+	const environment = await getEnvironment(
+		opt.environment ?? env.RAILWAY_ENVIRONMENT_ID,
+	);
+	const services = (
+		"services" in opt
+			? (opt.services ?? [])
+			: "service" in opt
+				? [opt.service]
+				: []
+	).map((service) => {
+		const s = environment.serviceInstances.edges.find(
+			(e) => e.node.serviceName === service || e.node.serviceId === service,
+		);
+		if (!s) {
+			throw new Error(
+				`No service found for environment ${environment.name} with name: "${service}"`,
+			);
+		}
+		return s.node;
+	});
+
 	switch (opt.type) {
 		case "service":
 			// @ts-expect-error
 			return {
 				type: "service",
-				serviceId: opt.serviceId,
-				environmentId: opt.environmentId ?? env.RAILWAY_ENVIRONMENT_ID,
+				environment,
+				services,
 				fetch(
 					input: GetServiceByIdQueryVariables,
 				): Promise<GetServiceByIdQuery> {
@@ -434,16 +589,16 @@ export function source<O extends SourceOptions>(
 				},
 			};
 
-		case "deployment_logs":
+		case "environment_logs":
 			// @ts-expect-error
 			return {
-				type: "deployment_logs",
-				serviceId: opt.serviceId,
-				environmentId: opt.environmentId ?? env.RAILWAY_ENVIRONMENT_ID,
+				type: "environment_logs",
+				environment,
+				services,
 				fetch(
-					input: ListDeploymentLogsQueryVariables,
-				): Promise<ListDeploymentLogsQuery> {
-					return railway.listDeploymentLogs(input);
+					input: ListEnvironmentLogsQueryVariables,
+				): Promise<ListEnvironmentLogsQuery> {
+					return railway.listEnvironmentLogs(input);
 				},
 			};
 
@@ -451,11 +606,10 @@ export function source<O extends SourceOptions>(
 			// @ts-expect-error
 			return {
 				type: "http_logs",
-				serviceId: opt.serviceId,
-				environmentId: opt.environmentId ?? env.RAILWAY_ENVIRONMENT_ID,
+				environment,
+				services,
 				fetch(input: ListHttpLogsQueryVariables): Promise<ListHttpLogsQuery> {
-					return {} as unknown as Promise<ListHttpLogsQuery>;
-					// return railway.listHttpLogs(input);
+					return railway.listHttpLogs(input);
 				},
 			};
 
@@ -463,8 +617,8 @@ export function source<O extends SourceOptions>(
 			// @ts-expect-error
 			return {
 				type: "metrics",
-				serviceId: opt.serviceId,
-				environmentId: opt.environmentId ?? env.RAILWAY_ENVIRONMENT_ID,
+				environment,
+				services,
 				fetch(input: ListMetricsQueryVariables): Promise<ListMetricsQuery> {
 					return railway.listMetrics(input);
 				},
@@ -474,38 +628,50 @@ export function source<O extends SourceOptions>(
 
 export type SourceOptions = {
 	/**
-	 * The ID of the Railway environment to check. Defaults to the environment you
+	 * The ID or name of the Railway environment to check. Defaults to the environment you
 	 * deployed monirail to.
 	 */
-	environmentId: string;
-	/**
-	 * The ID of the Railway service to check.
-	 */
-	serviceId?: string;
+	environment?: string;
 } & (
 	| {
-			type: "deployment_logs";
+			type: "environment_logs";
+			/**
+			 * The ID or names of the Railway services to check.
+			 */
+			services?: string[];
 	  }
 	| {
 			type: "http_logs";
+			/**
+			 * The ID or name of the Railway service to check.
+			 */
+			service: string;
 	  }
 	| {
 			type: "metrics";
+			/**
+			 * The ID or name of the Railway service to check.
+			 */
+			service: string;
 	  }
 	| {
 			type: "service";
+			/**
+			 * The ID or name of the Railway service to check.
+			 */
+			service: string;
 	  }
 );
 
 type BaseSource = {
-	environmentId: string;
-	serviceId?: string;
+	environment: GetEnvironmentByIdQuery["environment"];
+	services: GetEnvironmentByIdQuery["environment"]["serviceInstances"]["edges"][number]["node"][];
 };
-export type SourceDeploymentLogs = BaseSource & {
-	type: "deployment_logs";
+export type SourceEnvironmentLogs = BaseSource & {
+	type: "environment_logs";
 	fetch(
-		input: ListDeploymentLogsQueryVariables,
-	): Promise<ListDeploymentLogsQuery>;
+		input: ListEnvironmentLogsQueryVariables,
+	): Promise<ListEnvironmentLogsQuery>;
 };
 export type SourceHttpLogs = BaseSource & {
 	type: "http_logs";
@@ -515,10 +681,8 @@ export type SourceMetrics = BaseSource & {
 	type: "metrics";
 	fetch(input: ListMetricsQueryVariables): Promise<ListMetricsQuery>;
 };
-export type SourceService = {
+export type SourceService = BaseSource & {
 	type: "service";
-	environmentId?: string;
-	serviceId: string;
 	fetch(input: GetServiceByIdQueryVariables): Promise<GetServiceByIdQuery>;
 };
 
@@ -571,15 +735,15 @@ export function notify(opt: NotifyOptions): Notifier {
 						case "match":
 							message.embeds!.push({
 								title: payload.monitor.name,
-								description: `Found ${payload.matches.length} matches`,
+								description: `Found a match`,
 								color,
 								timestamp: payload.timestamp.toJSON(),
-								fields: [
-									{
-										name: "Matches",
-										value: JSON.stringify(payload.matches, null, 2),
-									},
-								],
+								// fields: [
+								// 	{
+								// 		name: "Matches",
+								// 		value: JSON.stringify(payload.matches, null, 2),
+								// 	},
+								// ],
 							});
 							break;
 
@@ -678,7 +842,7 @@ export function notify(opt: NotifyOptions): Notifier {
 								type: "section",
 								text: {
 									type: "mrkdwn",
-									text: `*${payload.monitor.name}* found ${payload.matches.length} matches`,
+									text: `*${payload.monitor.name}* found a match`,
 								},
 							});
 							break;
@@ -739,9 +903,7 @@ export function notify(opt: NotifyOptions): Notifier {
 					switch (payload.type) {
 						case "match":
 							summary = `${payload.monitor.name} ${triggeredText}. Found ${payload.matches.length} matches.`;
-							customDetails = {
-								matches: payload.matches,
-							};
+							customDetails = {};
 							break;
 
 						case "threshold":
@@ -781,11 +943,12 @@ export function notify(opt: NotifyOptions): Notifier {
 					};
 
 					if (!opt.component && "source" in payload.monitor) {
-						if ("serviceId" in payload.monitor.source) {
-							message.payload.component = payload.monitor.source.serviceId + "";
+						if ("services" in payload.monitor.source) {
+							message.payload.component =
+								payload.monitor.source.services[0] + "";
 							message.links = [
 								{
-									href: `https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${payload.monitor.source.serviceId}?environmentId=${payload.monitor.source.environmentId}`,
+									href: `https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${payload.monitor.source.services[0]}?environmentId=${payload.monitor.source.environment}`,
 									text: "View Service",
 								},
 							];
@@ -849,33 +1012,65 @@ export type NotifyOptions =
 	  }
 	| {
 			type: "slack";
+			/**
+			 * Slack webhook URL
+			 */
 			webhookUrl: string;
+			/**
+			 * The channel to send the notification to
+			 */
 			channel: string;
 	  }
 	| {
 			type: "discord";
+			/**
+			 * Discord webhook URL
+			 */
 			webhookUrl: string;
 	  }
 	| {
 			type: "webhook";
+			/**
+			 * The webhook URL
+			 */
 			url: string;
 	  }
 	| {
 			type: "custom";
+			/**
+			 * A function to send your notification
+			 * @param payload - The notification payload
+			 */
 			send: (payload: NotificationPayload) => Promise<void>;
 	  };
 
 export type NotificationPayload =
 	| {
 			type: "match";
-			monitor: MonitorMatch;
-			matches: unknown[];
+			monitor: Pick<MonitorMatch, "name" | "description" | "timeWindow"> & {
+				source:
+					| Pick<SourceEnvironmentLogs, "type" | "environment" | "services">
+					| Pick<SourceHttpLogs, "type" | "environment" | "services">;
+			};
 			triggered: boolean;
 			timestamp: Date;
 	  }
 	| {
 			type: "threshold";
-			monitor: MonitorThreshold;
+			monitor: Pick<
+				MonitorThreshold,
+				| "name"
+				| "description"
+				| "value"
+				| "timeWindow"
+				| "notifyOn"
+				| "notifyOnNoData"
+			> & {
+				source:
+					| Pick<SourceEnvironmentLogs, "type" | "environment" | "services">
+					| Pick<SourceHttpLogs, "type" | "environment" | "services">
+					| Pick<SourceMetrics, "type" | "environment" | "services">;
+			};
 			value: number;
 			threshold: number;
 			triggered: boolean;
@@ -883,13 +1078,21 @@ export type NotificationPayload =
 	  }
 	| {
 			type: "liveliness";
-			monitor: MonitorLiveliness;
+			monitor: Pick<MonitorLiveliness, "name" | "description" | "path"> & {
+				source: Pick<SourceService, "type" | "environment" | "services">;
+			};
 			triggered: boolean;
 			timestamp: Date;
 	  }
 	| {
 			type: "custom";
-			monitor: MonitorCustom;
+			monitor: Pick<MonitorCustom, "name" | "description"> & {
+				source:
+					| Pick<SourceEnvironmentLogs, "type" | "environment" | "services">
+					| Pick<SourceHttpLogs, "type" | "environment" | "services">
+					| Pick<SourceService, "type" | "environment" | "services">
+					| Pick<SourceMetrics, "type" | "environment" | "services">;
+			};
 			triggered: boolean;
 			data: Record<string, unknown>;
 			timestamp: Date;
@@ -967,8 +1170,13 @@ type PagerDutyEvent = {
  * @param monitors - The monitors to check
  * @returns A promise that resolves when all monitors have been checked
  */
-export function check(monitors: Monitor[]) {
-	return Promise.allSettled(monitors.map((m) => m.check()));
+export async function check(monitors: Monitor[]) {
+	const results = await Promise.allSettled(monitors.map((m) => m.check()));
+	results.forEach((result_1, index) => {
+		if (result_1.status === "rejected") {
+			console.error(`Monitor ${monitors[index].name} failed:`, result_1.reason);
+		}
+	});
 }
 
 /**
