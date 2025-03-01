@@ -305,6 +305,17 @@ export function monitor(opt: MonitorOptions): Monitor {
 					let value = 0;
 					let noData = false;
 
+					log.info(`Checking for threshold`, {
+						monitor: opt.name,
+						source: source.type,
+						environment: environment.name,
+						services: services.map((s) => s.serviceName),
+						threshold,
+						timeWindow: timeWindow2,
+						notifyOn: opt.notifyOn,
+						notifyOnNoData: opt.notifyOnNoData,
+					});
+
 					if (source.type !== "metrics") {
 						if (threshold > MAX_LOG_LIMIT) {
 							throw new Error(
@@ -468,9 +479,6 @@ export function monitor(opt: MonitorOptions): Monitor {
 						triggered = true;
 					}
 
-					console.log(
-						`Found a value of ${value} in the last ${timeWindow2} minutes`,
-					);
 					if (shouldNotify(opt.name, triggered)) {
 						upsertMonitorState(opt.name, triggered);
 						await Promise.allSettled(
