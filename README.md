@@ -2,6 +2,8 @@
 
 Monitor Railway services and notify your team when anomalies are detected
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/MF8Rcp?referralCode=5hTSOZ)
+
 > [!NOTE]
 > This must be used with the [Bun](https://bun.sh) runtime
 
