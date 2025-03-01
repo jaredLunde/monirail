@@ -11,6 +11,7 @@ import type {
 	ListHttpLogsQueryVariables,
 	ListMetricsQuery,
 	ListMetricsQueryVariables,
+	MetricMeasurement,
 } from "./types";
 import { env } from "./env";
 
@@ -129,6 +130,17 @@ async function getEnvironment(maybeEnvironmentId: string) {
 const isUuidRe =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+function createEnvironmentLogFilter(
+	services: GetEnvironmentByIdQuery["environment"]["serviceInstances"]["edges"][number]["node"][],
+	filter: string,
+) {
+	if (services.length) {
+		return `( ${services.map((service) => `@service:${service.serviceId}`).join(" OR ")} ) AND ${filter}`;
+	}
+
+	return filter;
+}
+
 export function monitor(opt: MonitorOptions): Monitor {
 	switch (opt.type) {
 		case "match":
@@ -139,6 +151,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 				name: opt.name,
 				description: opt.description,
 				source: opt.source,
+				filter: opt.filter,
 				timeWindow,
 				async check() {
 					const source = await opt.source;
@@ -197,7 +210,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 						).flat();
 					} else {
 						const results = await source.fetch({
-							filter: `( ${services.map((service) => `@service:${service.serviceId}`).join(" OR ")} ) AND ${opt.filter}`,
+							filter: createEnvironmentLogFilter(services, opt.filter),
 							environmentId: environment.id,
 							startDate: past.toJSON(),
 							endDate: now.toJSON(),
@@ -219,12 +232,15 @@ export function monitor(opt: MonitorOptions): Monitor {
 										name: this.name,
 										description: this.description,
 										timeWindow: this.timeWindow,
+										filter: opt.filter,
 										source: {
 											type: "environment_logs",
 											environment,
 											services,
 										},
 									},
+									startDate: past,
+									endDate: now,
 									triggered: true,
 									timestamp: now,
 								}),
@@ -240,12 +256,15 @@ export function monitor(opt: MonitorOptions): Monitor {
 										name: this.name,
 										description: this.description,
 										timeWindow: this.timeWindow,
+										filter: opt.filter,
 										source: {
 											type: "environment_logs",
 											environment,
 											services,
 										},
 									},
+									startDate: past,
+									endDate: now,
 									triggered: false,
 									timestamp: now,
 								}),
@@ -272,47 +291,212 @@ export function monitor(opt: MonitorOptions): Monitor {
 				timeWindow: timeWindow2,
 				async check() {
 					const source = await opt.source;
-					if (source.type !== "metrics" && threshold > MAX_LOG_LIMIT) {
-						throw new Error(
-							`${opt.name}: threshold cannot be greater than ${MAX_LOG_LIMIT}`,
-						);
+					const environment = source.environment;
+					const services = source.services;
+					const now = new Date();
+					const past = new Date(now.getTime() - timeWindow2 * 60 * 1000);
+					let value = 0;
+					let noData = false;
+
+					if (source.type !== "metrics") {
+						if (threshold > MAX_LOG_LIMIT) {
+							throw new Error(
+								`${opt.name}: threshold cannot be greater than ${MAX_LOG_LIMIT}`,
+							);
+						}
+					} else if (source.type === "metrics") {
+						// Calculate appropriate sample rate and averaging window based on aggregation type
+						const { sampleRateSeconds, averagingWindowSeconds } =
+							source.aggregate === "avg"
+								? calculateAvgMetricParams(timeWindow2)
+								: calculateExtremaMetricParams(timeWindow2);
+
+						const results = await source.fetch({
+							environmentId: environment.id,
+							serviceId: source.services[0]?.serviceId,
+							startDate: past,
+							endDate: now,
+							measurements: source.measure,
+							groupBy: source.services.length ? "SERVICE_ID" : "ENVIRONMENT_ID",
+							sampleRateSeconds,
+							averagingWindowSeconds,
+						});
+						console.log("results", results);
+
+						if (!results.metrics || !results.metrics.length) {
+							noData = true;
+							value = 0;
+						} else {
+							const values = results.metrics.flatMap((m) => m.values);
+
+							switch (source.aggregate) {
+								case "avg":
+									value =
+										values.reduce((sum, m) => sum + m.value, 0) / values.length;
+									break;
+								case "sum":
+									if (!values.length) {
+										value = 0;
+										break;
+									}
+
+									const sortedValues = [...values].sort((a, b) => a.ts - b.ts);
+
+									// Calculate gaps between consecutive samples
+									const gaps = [];
+									for (let i = 1; i < sortedValues.length; i++) {
+										const gap =
+											(sortedValues[i].ts - sortedValues[i - 1].ts) / 60; // in minutes
+										gaps.push(gap);
+									}
+
+									const sortedGaps = [...gaps].sort((a, b) => a - b);
+									const medianGap =
+										sortedGaps[Math.floor(sortedGaps.length / 2)];
+									const p90Index = Math.floor(sortedGaps.length * 0.9);
+									const p99Index = Math.floor(sortedGaps.length * 0.99);
+									const p90Gap = sortedGaps[p90Index];
+									const p99Gap = sortedGaps[p99Index];
+
+									// Look for bimodal distribution by analyzing gap clusters
+									// Filter out extreme outliers to make analysis clearer
+									const reasonableGaps = sortedGaps.filter(
+										(gap) => gap < p99Gap, // ignore top 1% of gaps
+									);
+
+									// Use k-means like approach to find two clusters
+									// Start with min and max as initial centroids
+									let smallClusterCenter = reasonableGaps[0];
+									let largeClusterCenter =
+										reasonableGaps[reasonableGaps.length - 1];
+
+									for (let iteration = 0; iteration < 5; iteration++) {
+										const smallCluster = [];
+										const largeCluster = [];
+
+										// Assign each gap to nearest cluster
+										for (const gap of reasonableGaps) {
+											if (
+												Math.abs(gap - smallClusterCenter) <
+												Math.abs(gap - largeClusterCenter)
+											) {
+												smallCluster.push(gap);
+											} else {
+												largeCluster.push(gap);
+											}
+										}
+
+										// Recalculate cluster centers
+										if (smallCluster.length > 0) {
+											smallClusterCenter =
+												smallCluster.reduce((sum, g) => sum + g, 0) /
+												smallCluster.length;
+										}
+
+										if (largeCluster.length > 0) {
+											largeClusterCenter =
+												largeCluster.reduce((sum, g) => sum + g, 0) /
+												largeCluster.length;
+										}
+									}
+
+									let threshold;
+
+									if (smallClusterCenter < largeClusterCenter * 0.5) {
+										// If we found distinct clusters, use the midpoint between them
+										threshold = (smallClusterCenter + largeClusterCenter) / 2;
+									} else {
+										// Fallback to use 90th percentile with a margin
+										threshold = p90Gap * 1.1;
+									}
+
+									// Reasonable bounds check
+									threshold = Math.min(60, Math.max(medianGap * 5, threshold));
+
+									// Calculate GB-minutes, excluding gaps larger than the threshold
+									let gbMinutes = 0;
+									let activeIntervals = 0;
+									let totalActiveMinutes = 0;
+
+									for (let i = 0; i < sortedValues.length - 1; i++) {
+										const currentTs = sortedValues[i].ts;
+										const nextTs = sortedValues[i + 1].ts;
+										const currentValue = sortedValues[i].value;
+										const deltaMinutes = (nextTs - currentTs) / 60;
+										if (deltaMinutes <= threshold) {
+											gbMinutes += currentValue * deltaMinutes;
+											totalActiveMinutes += deltaMinutes;
+											activeIntervals++;
+										}
+									}
+
+									// Set the calculated value
+									value = gbMinutes;
+									break;
+								case "max":
+									// For max, find the highest value
+									value = Math.max(...values.map((m) => m.value || 0));
+									break;
+								case "min":
+									// For min, find the lowest value
+									value = Math.min(...values.map((m) => m.value || 0));
+									break;
+							}
+						}
 					}
 
-					// TODO:
-					// const now = new Date();
-					// const past = new Date(now.getTime() - 5 * 60 * 1000);
-					// const values = await opt.source.fetch(past, now);
-					// const avg =
-					// 	values.reduce((sum, v) => sum + v.value, 0) / values.length;
-					// let shouldNotify = false;
-					// switch (opt.notifyOn) {
-					// 	case "above":
-					// 		shouldNotify = avg > opt.value;
-					// 		break;
-					// 	case "above_or_equal":
-					// 		shouldNotify = avg >= opt.value;
-					// 		break;
-					// 	case "below":
-					// 		shouldNotify = avg < opt.value;
-					// 		break;
-					// 	case "below_or_equal":
-					// 		shouldNotify = avg <= opt.value;
-					// 		break;
-					// }
-					// if (shouldNotify || (opt.notifyOnNoData && values.length === 0)) {
-					// 	await Promise.allSettled(
-					// 		opt.notify.map((n) =>
-					// 			n.send({
-					// 				type: "threshold",
-					// 				monitor: this,
-					// 				value: avg,
-					// 				threshold: opt.value,
-					// 				triggered: true,
-					// 				timestamp: now,
-					// 			}),
-					// 		),
-					// 	);
-					// }
+					let triggered = false;
+					switch (opt.notifyOn) {
+						case "above":
+							triggered = value > threshold;
+							break;
+						case "above_or_equal":
+							triggered = value >= threshold;
+							break;
+						case "below":
+							triggered = value < threshold;
+							break;
+						case "below_or_equal":
+							triggered = value <= threshold;
+							break;
+					}
+
+					if (noData && opt.notifyOnNoData) {
+						triggered = true;
+					}
+
+					console.log(
+						`Found a value of ${value} in the last ${timeWindow2} minutes`,
+					);
+					if (shouldNotify(opt.name, triggered)) {
+						upsertMonitorState(opt.name, triggered);
+						await Promise.allSettled(
+							opt.notify.map((n) =>
+								n.send({
+									type: "threshold",
+									monitor: {
+										name: this.name,
+										description: this.description,
+										value: this.value,
+										timeWindow: this.timeWindow,
+										notifyOn: this.notifyOn,
+										notifyOnNoData: this.notifyOnNoData,
+										source: {
+											type: source.type,
+											environment,
+											services,
+										},
+									},
+									value,
+									threshold,
+									startDate: past,
+									endDate: now,
+									triggered,
+									timestamp: now,
+								}),
+							),
+						);
+					}
 				},
 				then(onfulfilled, onrejected) {
 					return this.check().then(onfulfilled, onrejected);
@@ -355,17 +539,40 @@ export function monitor(opt: MonitorOptions): Monitor {
 								console.error(
 									`No static URL for service "${service.serviceName}" in environment "${environment.name}"`,
 								);
+								if (shouldNotify(opt.name, true)) {
+									upsertMonitorState(opt.name, true);
+									await Promise.allSettled(
+										opt.notify.map((n) =>
+											n.send({
+												type: "liveliness",
+												monitor: {
+													name: this.name,
+													description: this.description,
+													source: {
+														type: "service",
+														environment,
+														services,
+													},
+												},
+												url: "",
+												duration: 0,
+												triggered: true,
+												timestamp: now,
+											}),
+										),
+									);
+								}
 								return;
 							}
 							const u = new URL(opt.path ?? "/", `https://${url}`);
+							const start = Date.now();
 							const res = await fetch(u.toString());
 							console.log(
 								`Service "${service.serviceName}" in environment "${environment.name}" returned status ${res.status} for: ${url}`,
 							);
+							const duration = Date.now() - start;
 							const triggered = !res.ok;
-							if (
-								shouldNotify(`${opt.name}/${service.serviceName}`, triggered)
-							) {
+							if (shouldNotify(opt.name, triggered)) {
 								upsertMonitorState(opt.name, triggered);
 								await Promise.allSettled(
 									opt.notify.map((n) =>
@@ -381,6 +588,9 @@ export function monitor(opt: MonitorOptions): Monitor {
 													services,
 												},
 											},
+											url: u.toString(),
+											response: res,
+											duration,
 											triggered: !res.ok,
 											timestamp: now,
 										}),
@@ -517,6 +727,7 @@ type BaseMonitor = {
 export type MonitorMatch = BaseMonitor & {
 	type: "match";
 	source: Promise<SourceEnvironmentLogs | SourceHttpLogs>;
+	filter: string;
 	timeWindow: number;
 };
 export type MonitorThreshold = BaseMonitor & {
@@ -619,6 +830,8 @@ export async function source<O extends SourceOptions>(
 				type: "metrics",
 				environment,
 				services,
+				aggregate: opt.aggregate,
+				measure: opt.measure,
 				fetch(input: ListMetricsQueryVariables): Promise<ListMetricsQuery> {
 					return railway.listMetrics(input);
 				},
@@ -652,7 +865,16 @@ export type SourceOptions = {
 			/**
 			 * The ID or name of the Railway service to check.
 			 */
-			service: string;
+			service?: string;
+			aggregate: "sum" | "avg" | "max" | "min";
+			measure: Extract<
+				MetricMeasurement,
+				| "MEMORY_USAGE_GB"
+				| "CPU_USAGE"
+				| "NETWORK_INGRESS_GB"
+				| "NETWORK_EGRESS_GB"
+				| "EPHEMERAL_DISK_USAGE_GB"
+			>;
 	  }
 	| {
 			type: "service";
@@ -679,6 +901,15 @@ export type SourceHttpLogs = BaseSource & {
 };
 export type SourceMetrics = BaseSource & {
 	type: "metrics";
+	aggregate: "sum" | "avg" | "max" | "min";
+	measure: Extract<
+		MetricMeasurement,
+		| "MEMORY_USAGE_GB"
+		| "CPU_USAGE"
+		| "NETWORK_INGRESS_GB"
+		| "NETWORK_EGRESS_GB"
+		| "EPHEMERAL_DISK_USAGE_GB"
+	>;
 	fetch(input: ListMetricsQueryVariables): Promise<ListMetricsQuery>;
 };
 export type SourceService = BaseSource & {
@@ -688,15 +919,6 @@ export type SourceService = BaseSource & {
 
 export function notify(opt: NotifyOptions): Notifier {
 	const monitorUrl = `https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${env.RAILWAY_SERVICE_ID}?environmentId=${env.RAILWAY_ENVIRONMENT_ID}`;
-	// function getEnv(payload: NotificationPayload) {
-	// 	let serviceName: string;
-	// 	let projectName: string;
-	// 	let environmentName: string;
-	// 	const source = "source" in payload.monitor ? payload.monitor.source : null;
-	// 	const environmentId = source?.environmentId ?? env.RAILWAY_ENVIRONMENT_ID;
-	// 	const serviceId = source?.serviceId;
-	// 	railway.getEnvironmentById({ id: environmentId });
-	// }
 
 	switch (opt.type) {
 		case "webhook":
@@ -721,35 +943,88 @@ export function notify(opt: NotifyOptions): Notifier {
 					console.log("Notifying via Discord: ", payload);
 					let color = payload.triggered ? 0xff0000 : 0x00ff00;
 					const message: DiscordMessage = {
-						content: payload.triggered
-							? `🚨 Monitor triggered`
-							: `✅ Monitor resolved`,
-						username: "monirail",
-						avatar_url:
-							"https://github.com/jaredLunde/monirail/blob/main/assets/monirail.png?raw=true",
+						username: "Monirail",
 						embeds: [],
 					};
 
 					// Green: 0x00ff00,
 					switch (payload.type) {
 						case "match":
-							message.embeds!.push({
-								title: payload.monitor.name,
-								description: `Found a match`,
-								color,
-								timestamp: payload.timestamp.toJSON(),
-								// fields: [
-								// 	{
-								// 		name: "Matches",
-								// 		value: JSON.stringify(payload.matches, null, 2),
-								// 	},
-								// ],
-							});
+							const source = payload.monitor.source;
+
+							message.embeds = [
+								{
+									author: {
+										name: "Monirail",
+										icon_url:
+											"https://raw.githubusercontent.com/jaredLunde/monirail/refs/heads/main/assets/monirail.png",
+									},
+									title: `${payload.triggered ? "🚨" : "✅"}  ${payload.monitor.name}`,
+									description: payload.triggered
+										? `Found a match in the last ${payload.monitor.timeWindow} minutes`
+										: `No match found in the last ${payload.monitor.timeWindow} minutes`,
+									color,
+									timestamp: payload.timestamp.toJSON(),
+									fields: [
+										{
+											name: "Project",
+											value: `[${env.RAILWAY_PROJECT_NAME}](https://railway.com/project/${env.RAILWAY_PROJECT_ID})`,
+											inline: true,
+										},
+										{
+											name: "Environment",
+											value: `[${payload.monitor.source.environment.name}](https://railway.com/project/${env.RAILWAY_PROJECT_ID}?environmentId=${payload.monitor.source.environment.id})`,
+											inline: true,
+										},
+										payload.monitor.source.services.length > 0 && {
+											name: "Services",
+											value: payload.monitor.source.services
+												.map(
+													(svc) =>
+														`[${svc.serviceName}](https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${svc.serviceId}?environmentId=${payload.monitor.source.environment.id})`,
+												)
+												.join(", "),
+											inline: true,
+										},
+										{
+											name: "Filter",
+											value: payload.monitor.filter,
+										},
+									].filter(Boolean),
+								},
+							];
+							if (source.type === "environment_logs" && payload.triggered) {
+								const u = new URL(
+									`/project/${env.RAILWAY_PROJECT_ID}/logs?environmentId=${payload.monitor.source.environment.id}`,
+									"https://railway.com",
+								);
+								u.searchParams.set(
+									"filter",
+									createEnvironmentLogFilter(
+										source.services,
+										payload.monitor.filter,
+									),
+								);
+								u.searchParams.set(
+									"start",
+									payload.startDate.getTime().toString(),
+								);
+								u.searchParams.set("end", payload.endDate.getTime().toString());
+								message.embeds[0].fields!.push({
+									name: "Link",
+									value: `[View Logs in Railway](${u})`,
+								});
+							}
 							break;
 
 						case "threshold":
-							message.embeds!.push({
-								title: payload.monitor.name,
+							message.embeds.push({
+								author: {
+									name: "Monirail",
+									icon_url:
+										"https://raw.githubusercontent.com/jaredLunde/monirail/refs/heads/main/assets/monirail.png",
+								},
+								title: `${payload.triggered ? "🚨" : "✅"}  ${payload.monitor.name}`,
 								description: payload.triggered
 									? `Value ${payload.value} crossed threshold ${payload.threshold}`
 									: `Value ${payload.value} is back to normal`,
@@ -757,12 +1032,34 @@ export function notify(opt: NotifyOptions): Notifier {
 								timestamp: payload.timestamp.toJSON(),
 								fields: [
 									{
+										name: "Project",
+										value: `[${env.RAILWAY_PROJECT_NAME}](https://railway.com/project/${env.RAILWAY_PROJECT_ID})`,
+										inline: true,
+									},
+									{
+										name: "Environment",
+										value: `[${payload.monitor.source.environment.name}](https://railway.com/project/${env.RAILWAY_PROJECT_ID}?environmentId=${payload.monitor.source.environment.id})`,
+										inline: true,
+									},
+									payload.monitor.source.services.length > 0 && {
+										name: "Services",
+										value: payload.monitor.source.services
+											.map(
+												(svc) =>
+													`[${svc.serviceName}](https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${svc.serviceId}?environmentId=${payload.monitor.source.environment.id})`,
+											)
+											.join(", "),
+										inline: true,
+									},
+									{
 										name: "Value",
 										value: `${payload.value}`,
+										inline: true,
 									},
 									{
 										name: "Threshold",
 										value: `${payload.threshold}`,
+										inline: true,
 									},
 								],
 							});
@@ -771,14 +1068,47 @@ export function notify(opt: NotifyOptions): Notifier {
 						case "liveliness":
 							const status = payload.triggered ? "down" : "up";
 							message.embeds!.push({
-								title: payload.monitor.name,
+								author: {
+									name: "Monirail",
+									icon_url:
+										"https://raw.githubusercontent.com/jaredLunde/monirail/refs/heads/main/assets/monirail.png",
+								},
+								title: `${payload.triggered ? "🚨" : "✅"}  ${payload.monitor.name}`,
 								description: `Service is ${status}`,
 								color,
 								timestamp: payload.timestamp.toJSON(),
 								fields: [
 									{
+										name: "Project",
+										value: `[${env.RAILWAY_PROJECT_NAME}](https://railway.com/project/${env.RAILWAY_PROJECT_ID})`,
+										inline: true,
+									},
+									{
+										name: "Environment",
+										value: `[${payload.monitor.source.environment.name}](https://railway.com/project/${env.RAILWAY_PROJECT_ID}?environmentId=${payload.monitor.source.environment.id})`,
+										inline: true,
+									},
+									payload.monitor.source.services.length > 0 && {
+										name: "Service",
+										value: payload.monitor.source.services
+											.map(
+												(svc) =>
+													`[${svc.serviceName}](https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${svc.serviceId}?environmentId=${payload.monitor.source.environment.id})`,
+											)
+											.join(", "),
+										inline: true,
+									},
+									{
 										name: "Status",
-										value: `${status}`,
+										value: payload.response
+											? `${payload.response.status} ${payload.response.statusText} in ${payload.duration}ms`
+											: status,
+										inline: true,
+									},
+									{
+										name: "URL",
+										value: payload.url,
+										inline: true,
 									},
 								],
 							});
@@ -786,11 +1116,36 @@ export function notify(opt: NotifyOptions): Notifier {
 
 						case "custom":
 							message.embeds!.push({
-								title: payload.monitor.name,
+								author: {
+									name: "Monirail",
+									icon_url:
+										"https://raw.githubusercontent.com/jaredLunde/monirail/refs/heads/main/assets/monirail.png",
+								},
+								title: `${payload.triggered ? "🚨" : "✅"}  ${payload.monitor.name}`,
 								description: `Custom monitor ${payload.triggered ? "triggered" : "resolved"}`,
 								color,
 								timestamp: payload.timestamp.toJSON(),
 								fields: [
+									{
+										name: "Project",
+										value: `[${env.RAILWAY_PROJECT_NAME}](https://railway.com/project/${env.RAILWAY_PROJECT_ID})`,
+										inline: true,
+									},
+									{
+										name: "Environment",
+										value: `[${payload.monitor.source.environment.name}](https://railway.com/project/${env.RAILWAY_PROJECT_ID}?environmentId=${payload.monitor.source.environment.id})`,
+										inline: true,
+									},
+									payload.monitor.source.services.length > 0 && {
+										name: "Services",
+										value: payload.monitor.source.services
+											.map(
+												(svc) =>
+													`[${svc.serviceName}](https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${svc.serviceId}?environmentId=${payload.monitor.source.environment.id})`,
+											)
+											.join(", "),
+										inline: true,
+									},
 									{
 										name: "Data",
 										value: JSON.stringify(payload.data, null, 2),
@@ -800,17 +1155,24 @@ export function notify(opt: NotifyOptions): Notifier {
 							break;
 					}
 
-					const res = await retryWithBackoff(() =>
+					await retryWithBackoff(() =>
 						fetch(opt.webhookUrl, {
 							method: "POST",
 							headers: { "Content-Type": "application/json" },
 							body: JSON.stringify(message),
+						}).then((res) => {
+							if (!res.ok) {
+								if (res.status > 500) {
+									throw new Error(`Discord notification failed: ${res.status}`);
+								} else {
+									console.error(
+										`Discord notification failed: ${res.status} ${res.statusText}`,
+									);
+								}
+							}
+							return res;
 						}),
 					);
-
-					if (!res.ok) {
-						throw new Error(`Discord notification failed: ${res.status}`);
-					}
 				},
 			};
 
@@ -833,7 +1195,7 @@ export function notify(opt: NotifyOptions): Notifier {
 						],
 						username: "monirail",
 						icon_url:
-							"https://github.com/jaredLunde/monirail/blob/main/assets/monirail.png?raw=true",
+							"https://raw.githubusercontent.com/jaredLunde/monirail/refs/heads/main/assets/monirail.png",
 					};
 
 					switch (payload.type) {
@@ -902,7 +1264,7 @@ export function notify(opt: NotifyOptions): Notifier {
 					const triggeredText = payload.triggered ? "triggered" : "resolved";
 					switch (payload.type) {
 						case "match":
-							summary = `${payload.monitor.name} ${triggeredText}. Found ${payload.matches.length} matches.`;
+							summary = `${payload.monitor.name} ${triggeredText}. Found a match.`;
 							customDetails = {};
 							break;
 
@@ -1047,11 +1409,16 @@ export type NotifyOptions =
 export type NotificationPayload =
 	| {
 			type: "match";
-			monitor: Pick<MonitorMatch, "name" | "description" | "timeWindow"> & {
+			monitor: Pick<
+				MonitorMatch,
+				"name" | "description" | "timeWindow" | "filter"
+			> & {
 				source:
 					| Pick<SourceEnvironmentLogs, "type" | "environment" | "services">
 					| Pick<SourceHttpLogs, "type" | "environment" | "services">;
 			};
+			startDate: Date;
+			endDate: Date;
 			triggered: boolean;
 			timestamp: Date;
 	  }
@@ -1073,6 +1440,8 @@ export type NotificationPayload =
 			};
 			value: number;
 			threshold: number;
+			startDate: Date;
+			endDate: Date;
 			triggered: boolean;
 			timestamp: Date;
 	  }
@@ -1081,6 +1450,9 @@ export type NotificationPayload =
 			monitor: Pick<MonitorLiveliness, "name" | "description" | "path"> & {
 				source: Pick<SourceService, "type" | "environment" | "services">;
 			};
+			url: string;
+			response?: Response;
+			duration: number;
 			triggered: boolean;
 			timestamp: Date;
 	  }
@@ -1106,18 +1478,45 @@ type DiscordMessage = {
 	content?: string;
 	username?: string;
 	avatar_url?: string;
-	embeds?: DiscordEmbed[];
+	embeds: DiscordEmbed[];
+	components?: DiscordComponent[];
 };
 
+interface DiscordComponent {
+	type: number;
+	components: DiscordButton[];
+}
+
+interface DiscordButton {
+	type: number;
+	style: number;
+	label: string;
+	url: string;
+	disabled?: boolean;
+	emoji?: {
+		id?: string;
+		name?: string;
+		animated?: boolean;
+	};
+}
+
 type DiscordEmbed = {
+	author?: {
+		name: string;
+		icon_url?: string;
+		url?: string;
+	};
 	title?: string;
 	description?: string;
 	color?: number;
-	fields?: {
-		name: string;
-		value: string;
-		inline?: boolean;
-	}[];
+	fields?: (
+		| boolean
+		| {
+				name: string;
+				value: string;
+				inline?: boolean;
+		  }
+	)[];
 	timestamp?: string;
 };
 
@@ -1227,14 +1626,11 @@ async function retryWithBackoff<T>(
 				throw error;
 			}
 
-			// Calculate delay with exponential backoff
+			console.warn(`Retrying due to error: ${error}`);
 			const exponentialDelay = initialDelay * Math.pow(2, retries);
 			const cappedDelay = Math.min(exponentialDelay, maxDelay);
-
-			// Add random jitter
 			const jitter = cappedDelay * jitterFactor * (Math.random() * 2 - 1);
 			const finalDelay = cappedDelay + jitter;
-
 			await new Promise((resolve) => setTimeout(resolve, finalDelay));
 			retries++;
 		}
@@ -1247,3 +1643,40 @@ type RetryWithBackoffOptions = {
 	maxDelay?: number;
 	jitterFactor?: number;
 };
+
+// For averages use a full window approach
+function calculateAvgMetricParams(timeWindowMinutes: number): {
+	sampleRateSeconds: number;
+	averagingWindowSeconds: number;
+} {
+	const averagingWindowSeconds = timeWindowMinutes * 60;
+	let sampleRateSeconds = Math.max(
+		30,
+		Math.min(240, Math.floor(30 * Math.log10(timeWindowMinutes))),
+	);
+
+	return { sampleRateSeconds, averagingWindowSeconds };
+}
+
+// For min/max/sum use more frequent sampling
+function calculateExtremaMetricParams(timeWindowMinutes: number): {
+	sampleRateSeconds: number;
+	averagingWindowSeconds: number;
+} {
+	let sampleRateSeconds: number;
+
+	if (timeWindowMinutes <= 10) {
+		sampleRateSeconds = 30;
+	} else if (timeWindowMinutes <= 60) {
+		sampleRateSeconds = Math.max(Math.floor(timeWindowMinutes / 4), 30);
+	} else {
+		sampleRateSeconds = Math.min(
+			120,
+			Math.floor(20 * Math.log10(timeWindowMinutes)),
+		);
+	}
+
+	const averagingWindowSeconds = Math.min(sampleRateSeconds * 3, 60);
+
+	return { sampleRateSeconds, averagingWindowSeconds };
+}

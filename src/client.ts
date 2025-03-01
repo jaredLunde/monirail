@@ -56,7 +56,10 @@ export function createClient(url: string | URL, init: RequestInit = {}) {
 			body: JSON.stringify({ query, variables }),
 		});
 		const data = await (res.json() as Promise<GraphQLResponse<TResult>>);
-		if (data.errors) throw new Error(data.errors[0].message);
+		if (data.errors) {
+			console.log(data.errors);
+			throw new Error(data.errors[0].message);
+		}
 		if (!data.data) throw new Error("No data returned from GraphQL request");
 		return data.data;
 	};

@@ -635,6 +635,7 @@ export type RecoveryCodeValidateInput = {
 
 export type ReferralInfoUpdateInput = {
 	code: Scalars["String"]["input"];
+	workspaceId?: InputMaybe<Scalars["String"]["input"]>;
 };
 
 export const ReferralStatus = {
@@ -1219,6 +1220,8 @@ export type ListMetricsQueryVariables = Exact<{
 	startDate: Scalars["DateTime"]["input"];
 	endDate: Scalars["DateTime"]["input"];
 	groupBy?: InputMaybe<Array<MetricTag> | MetricTag>;
+	sampleRateSeconds?: InputMaybe<Scalars["Int"]["input"]>;
+	averagingWindowSeconds?: InputMaybe<Scalars["Int"]["input"]>;
 }>;
 
 export type ListMetricsQuery = {

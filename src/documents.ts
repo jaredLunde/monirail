@@ -73,7 +73,7 @@ export const ListHttpLogs = new TypedDocumentString(`
 }
     `);
 export const ListMetrics = new TypedDocumentString(`
-    query listMetrics($environmentId: String!, $serviceId: String, $volumeId: String, $measurements: [MetricMeasurement!]!, $startDate: DateTime!, $endDate: DateTime!, $groupBy: [MetricTag!]) {
+    query listMetrics($environmentId: String!, $serviceId: String, $volumeId: String, $measurements: [MetricMeasurement!]!, $startDate: DateTime!, $endDate: DateTime!, $groupBy: [MetricTag!], $sampleRateSeconds: Int, $averagingWindowSeconds: Int) {
   metrics(
     environmentId: $environmentId
     serviceId: $serviceId
@@ -83,7 +83,8 @@ export const ListMetrics = new TypedDocumentString(`
     endDate: $endDate
     groupBy: $groupBy
     includeDeleted: false
-    sampleRateSeconds: 10
+    sampleRateSeconds: $sampleRateSeconds
+    averagingWindowSeconds: $averagingWindowSeconds
   ) {
     measurement
     values {

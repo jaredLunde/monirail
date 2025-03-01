@@ -83,6 +83,8 @@ query listMetrics(
   $startDate: DateTime!
   $endDate: DateTime!
   $groupBy: [MetricTag!]
+  $sampleRateSeconds: Int
+  $averagingWindowSeconds: Int
 ) {
   metrics(
     environmentId: $environmentId
@@ -93,7 +95,8 @@ query listMetrics(
     endDate: $endDate
     groupBy: $groupBy
     includeDeleted: false
-    sampleRateSeconds: 10
+    sampleRateSeconds: $sampleRateSeconds
+    averagingWindowSeconds: $averagingWindowSeconds
   ) {
     measurement
     values {
