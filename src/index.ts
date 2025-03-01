@@ -536,9 +536,9 @@ export function monitor(opt: MonitorOptions): Monitor {
 				},
 			};
 
-		case "liveliness":
+		case "availability":
 			return {
-				type: "liveliness",
+				type: "availability",
 				name: opt.name,
 				description: opt.description,
 				source: opt.source,
@@ -577,7 +577,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 									await Promise.allSettled(
 										opt.notify.map((n) =>
 											n.send({
-												type: "liveliness",
+												type: "availability",
 												monitor: {
 													name: this.name,
 													description: this.description,
@@ -599,7 +599,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 							}
 							const u = new URL(opt.path ?? "/", `https://${url}`);
 
-							log.info(`Checking liveliness`, {
+							log.info(`Checking availability`, {
 								monitor: opt.name,
 								source: source.type,
 								environment: environment.name,
@@ -628,7 +628,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 								await Promise.allSettled(
 									opt.notify.map((n) =>
 										n.send({
-											type: "liveliness",
+											type: "availability",
 											monitor: {
 												name: this.name,
 												description: this.description,
@@ -751,10 +751,10 @@ export type MonitorOptions = {
 			timeWindow?: number;
 	  }
 	| {
-			type: "liveliness";
+			type: "availability";
 			source: Promise<SourceService>;
 			/**
-			 * The path to check for liveliness
+			 * The path to check for availability
 			 * @default "/"
 			 */
 			path?: string;
@@ -773,7 +773,7 @@ export type MonitorOptions = {
 export type Monitor =
 	| MonitorMatch
 	| MonitorThreshold
-	| MonitorLiveliness
+	| MonitorAvailability
 	| MonitorCustom;
 
 type BaseMonitor = {
@@ -803,8 +803,8 @@ export type MonitorThreshold = BaseMonitor & {
 	 */
 	timeWindow: number;
 };
-export type MonitorLiveliness = BaseMonitor & {
-	type: "liveliness";
+export type MonitorAvailability = BaseMonitor & {
+	type: "availability";
 	source: Promise<SourceService>;
 	path?: string;
 };
@@ -1142,7 +1142,7 @@ export function notify(opt: NotifyOptions): Notifier {
 							});
 							break;
 
-						case "liveliness":
+						case "availability":
 							const status = payload.triggered ? "down" : "up";
 							message.embeds!.push({
 								author: {
@@ -1408,7 +1408,7 @@ export function notify(opt: NotifyOptions): Notifier {
 							});
 							break;
 
-						case "liveliness":
+						case "availability":
 							const status = payload.triggered ? "down" : "up";
 							blocks.push({
 								type: "section",
@@ -1525,7 +1525,7 @@ ${JSON.stringify(payload.data, null, 2)}
 							};
 							break;
 
-						case "liveliness":
+						case "availability":
 							const status = payload.triggered ? "down" : "up";
 							summary = `${payload.monitor.name} ${triggeredText}. Service is ${status}.`;
 							customDetails = { status };
@@ -1721,8 +1721,8 @@ export type NotificationPayload =
 			timestamp: Date;
 	  }
 	| {
-			type: "liveliness";
-			monitor: Pick<MonitorLiveliness, "name" | "description" | "path"> & {
+			type: "availability";
+			monitor: Pick<MonitorAvailability, "name" | "description" | "path"> & {
 				source: Pick<SourceService, "type" | "environment" | "services">;
 			};
 			url: string;
