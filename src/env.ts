@@ -2,6 +2,7 @@ import process from "node:process";
 
 type Env = {
 	NODE_ENV: "development" | "production";
+	LOG_FORMAT: "pretty" | "json";
 	SQLITE_DB_FILE: string;
 	RAILWAY_API_URL: string;
 	RAILWAY_API_TOKEN: string;
@@ -17,6 +18,9 @@ export const env: Env = {
 	NODE_ENV: ["development", "production"].includes(process.env.NODE_ENV + "")
 		? (process.env.NODE_ENV as "development" | "production")
 		: "development",
+	LOG_FORMAT: ["pretty", "json"].includes(process.env.LOG_FORMAT + "")
+		? (process.env.LOG_FORMAT as "pretty" | "json")
+		: "pretty",
 	SQLITE_DB_FILE: process.env.SQLITE_DB_FILE || "/data/monirail.sqlite",
 	RAILWAY_API_URL:
 		process.env.RAILWAY_API_URL || "https://backboard.railway.app/graphql/v2",

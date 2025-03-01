@@ -14,6 +14,7 @@ import type {
 	MetricMeasurement,
 } from "./types";
 import { env } from "./env";
+import { log } from "./log";
 
 const db = new Database(env.SQLITE_DB_FILE);
 
@@ -159,9 +160,13 @@ export function monitor(opt: MonitorOptions): Monitor {
 					const source = await opt.source;
 					const environment = source.environment;
 					const services = source.services;
-					console.log(
-						`Checking for matches for environment ${environment.name}`,
-					);
+					log.info(`Checking for matches`, {
+						monitor: opt.name,
+						source: source.type,
+						environment: environment.name,
+						services: services.map((s) => s.serviceName),
+						filter: opt.filter,
+					});
 					const now = new Date();
 					const past = new Date(now.getTime() - timeWindow * 60 * 1000); // last 5 min
 					let matches: unknown[] = [];
@@ -323,7 +328,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 							sampleRateSeconds,
 							averagingWindowSeconds,
 						});
-						console.log("results", results);
+
 						const values = results.metrics.flatMap((m) => m.values);
 
 						if (!values.length) {
@@ -515,9 +520,6 @@ export function monitor(opt: MonitorOptions): Monitor {
 
 					await Promise.allSettled(
 						services.map(async (service) => {
-							console.log(
-								`Checking liveliness for service "${service.serviceName}" in environment "${environment.name}"`,
-							);
 							const now = new Date();
 							const deploy = await railway.listDeployments({
 								environmentId: environment.id,
@@ -534,9 +536,12 @@ export function monitor(opt: MonitorOptions): Monitor {
 							const [deployment] = deploy.deployments.edges;
 							const url = deployment?.node.staticUrl;
 							if (!url) {
-								console.error(
-									`No static URL for service "${service.serviceName}" in environment "${environment.name}"`,
-								);
+								log.error(`No static URL found for service`, {
+									monitor: opt.name,
+									source: source.type,
+									service: service.serviceName,
+									environment: environment.name,
+								});
 								if (shouldNotify(opt.name, true)) {
 									upsertMonitorState(opt.name, true);
 									await Promise.allSettled(
@@ -563,12 +568,29 @@ export function monitor(opt: MonitorOptions): Monitor {
 								return;
 							}
 							const u = new URL(opt.path ?? "/", `https://${url}`);
+
+							log.info(`Checking for liveliness`, {
+								monitor: opt.name,
+								source: source.type,
+								environment: environment.name,
+								service: service.serviceName,
+								url: u.toString(),
+							});
+
 							const start = Date.now();
 							const res = await fetch(u.toString());
-							console.log(
-								`Service "${service.serviceName}" in environment "${environment.name}" returned status ${res.status} for: ${url}`,
-							);
 							const duration = Date.now() - start;
+
+							log.info(`Liveliness response`, {
+								monitor: opt.name,
+								source: source.type,
+								environment: environment.name,
+								service: service.serviceName,
+								url: u.toString(),
+								status: res.status,
+								duration,
+							});
+
 							const triggered = !res.ok;
 							if (shouldNotify(opt.name, triggered)) {
 								upsertMonitorState(opt.name, triggered);
@@ -613,9 +635,15 @@ export function monitor(opt: MonitorOptions): Monitor {
 				async check() {
 					const source = await opt.source;
 					const now = new Date();
+					log.info(`Checking custom monitor`, {
+						monitor: opt.name,
+						source: source.type,
+						environment: source.environment.name,
+					});
 					const { triggered, ...data } = await opt.check();
 
-					if (triggered) {
+					if (shouldNotify(opt.name, triggered)) {
+						upsertMonitorState(opt.name, triggered);
 						await Promise.allSettled(
 							opt.notify.map((n) =>
 								n.send({
@@ -623,10 +651,14 @@ export function monitor(opt: MonitorOptions): Monitor {
 									monitor: {
 										name: this.name,
 										description: this.description,
-										source,
+										source: {
+											type: source.type,
+											environment: source.environment,
+											services: source.services,
+										},
 									},
-									triggered: true,
 									data,
+									triggered,
 									timestamp: now,
 								}),
 							),
@@ -1291,6 +1323,7 @@ export function notify(opt: NotifyOptions): Notifier {
 						client_url: opt.clientUrl ?? monitorUrl,
 						routing_key: opt.routingKey,
 						event_action: payload.triggered ? "trigger" : "resolve",
+						dedup_key: `monirail-${payload.monitor.name}`,
 						payload: {
 							summary,
 							source: "monirail",
@@ -1299,19 +1332,48 @@ export function notify(opt: NotifyOptions): Notifier {
 							component: opt.component,
 							group: opt.group ?? env.RAILWAY_PROJECT_NAME,
 						},
+						links: [],
 						custom_details: customDetails,
 					};
 
 					if (!opt.component && "source" in payload.monitor) {
-						if ("services" in payload.monitor.source) {
+						const source = payload.monitor.source;
+						if ("services" in source) {
 							message.payload.component =
-								payload.monitor.source.services[0] + "";
-							message.links = [
-								{
-									href: `https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${payload.monitor.source.services[0]}?environmentId=${payload.monitor.source.environment}`,
-									text: "View Service",
-								},
-							];
+								message.payload.component ??
+								payload.monitor.source.services[0]?.serviceName;
+							message.links.push({
+								href: `https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${payload.monitor.source.services[0].serviceId}?environmentId=${payload.monitor.source.environment.id}`,
+								text: "View Service",
+							});
+						}
+
+						if (
+							source.type === "environment_logs" &&
+							payload.triggered &&
+							"filter" in payload.monitor &&
+							"startDate" in payload
+						) {
+							const u = new URL(
+								`/project/${env.RAILWAY_PROJECT_ID}/logs?environmentId=${payload.monitor.source.environment.id}`,
+								"https://railway.com",
+							);
+							u.searchParams.set(
+								"filter",
+								createEnvironmentLogFilter(
+									source.services,
+									payload.monitor.filter,
+								),
+							);
+							u.searchParams.set(
+								"start",
+								payload.startDate.getTime().toString(),
+							);
+							u.searchParams.set("end", payload.endDate.getTime().toString());
+							message.links.push({
+								href: u.toString(),
+								text: "View Logs in Railway",
+							});
 						}
 					}
 
@@ -1544,6 +1606,7 @@ export type PagerDutySeverity = "critical" | "error" | "warning" | "info";
 type PagerDutyEvent = {
 	routing_key: string;
 	event_action: "trigger" | "resolve";
+	dedup_key: string;
 	payload: {
 		summary: string;
 		source: string;
@@ -1555,7 +1618,7 @@ type PagerDutyEvent = {
 	};
 	client?: string;
 	client_url?: string;
-	links?: Array<{
+	links: Array<{
 		href: string;
 		text: string;
 	}>;
