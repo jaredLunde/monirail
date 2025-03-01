@@ -188,7 +188,7 @@ export function createLogger(options: LogOptions = {}) {
 								typeof item === "object" && item !== null
 									? formatObject(item, 1)
 									: item;
-							result += `    ${colors.dim}|${colors.reset} ${index + 1} ${displayValue}\n`;
+							result += `    ${colors.dim}│${colors.reset} ${displayValue}\n`;
 						});
 
 						if (value.length > 5) {

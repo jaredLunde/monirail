@@ -160,12 +160,13 @@ export function monitor(opt: MonitorOptions): Monitor {
 					const source = await opt.source;
 					const environment = source.environment;
 					const services = source.services;
-					log.info(`Checking for matches`, {
+					log.info(`Checking matches`, {
 						monitor: opt.name,
 						source: source.type,
 						environment: environment.name,
 						services: services.map((s) => s.serviceName),
 						filter: opt.filter,
+						timeWindow,
 					});
 					const now = new Date();
 					const past = new Date(now.getTime() - timeWindow * 60 * 1000); // last 5 min
@@ -226,9 +227,17 @@ export function monitor(opt: MonitorOptions): Monitor {
 						matches = results.environmentLogs;
 					}
 
-					console.log(
-						`Found a match for ${opt.filter} in the last ${timeWindow} minutes`,
-					);
+					log.info(`Matches ${matches.length ? "found" : "not found"}`, {
+						monitor: opt.name,
+						source: source.type,
+						environment: environment.name,
+						services: services.map((s) => s.serviceName),
+						filter: opt.filter,
+						matches: matches.length,
+						timeWindow,
+						triggered: matches.length >= 1,
+					});
+
 					if (matches.length >= 1 && shouldNotify(opt.name, true)) {
 						upsertMonitorState(opt.name, true);
 						await Promise.allSettled(
@@ -305,7 +314,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 					let value = 0;
 					let noData = false;
 
-					log.info(`Checking for threshold`, {
+					log.info(`Checking threshold`, {
 						monitor: opt.name,
 						source: source.type,
 						environment: environment.name,
@@ -479,6 +488,19 @@ export function monitor(opt: MonitorOptions): Monitor {
 						triggered = true;
 					}
 
+					log.info(`Threshold ${triggered ? "crossed" : "not crossed"}`, {
+						monitor: opt.name,
+						source: source.type,
+						environment: environment.name,
+						services: services.map((s) => s.serviceName),
+						value,
+						threshold,
+						triggered,
+						notifyOn: opt.notifyOn,
+						notifyOnNoData: opt.notifyOnNoData,
+						timeWindow: timeWindow2,
+					});
+
 					if (shouldNotify(opt.name, triggered)) {
 						upsertMonitorState(opt.name, triggered);
 						await Promise.allSettled(
@@ -577,7 +599,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 							}
 							const u = new URL(opt.path ?? "/", `https://${url}`);
 
-							log.info(`Checking for liveliness`, {
+							log.info(`Checking liveliness`, {
 								monitor: opt.name,
 								source: source.type,
 								environment: environment.name,
@@ -588,8 +610,9 @@ export function monitor(opt: MonitorOptions): Monitor {
 							const start = Date.now();
 							const res = await fetch(u.toString());
 							const duration = Date.now() - start;
+							const triggered = !res.ok;
 
-							log.info(`Liveliness response`, {
+							log.info(`Server is ${triggered ? "up" : "down"}`, {
 								monitor: opt.name,
 								source: source.type,
 								environment: environment.name,
@@ -597,9 +620,9 @@ export function monitor(opt: MonitorOptions): Monitor {
 								url: u.toString(),
 								status: res.status,
 								duration,
+								triggered,
 							});
 
-							const triggered = !res.ok;
 							if (shouldNotify(opt.name, triggered)) {
 								upsertMonitorState(opt.name, triggered);
 								await Promise.allSettled(
@@ -1056,6 +1079,22 @@ export function notify(opt: NotifyOptions): Notifier {
 							break;
 
 						case "threshold":
+							let conditionText;
+							switch (payload.monitor.notifyOn) {
+								case "above":
+									conditionText = "was above";
+									break;
+								case "above_or_equal":
+									conditionText = "was above or equal to";
+									break;
+								case "below":
+									conditionText = "was below";
+									break;
+								case "below_or_equal":
+									conditionText = "was below or equal to";
+									break;
+							}
+
 							message.embeds.push({
 								author: {
 									name: "Monirail",
@@ -1064,7 +1103,7 @@ export function notify(opt: NotifyOptions): Notifier {
 								},
 								title: `${payload.triggered ? "🚨" : "✅"}  ${payload.monitor.name}`,
 								description: payload.triggered
-									? `Value ${payload.value} crossed threshold ${payload.threshold}`
+									? `Value ${payload.value} ${conditionText} ${payload.threshold}`
 									: `Value ${payload.value} is back to normal`,
 								color,
 								timestamp: payload.timestamp.toJSON(),
@@ -1218,66 +1257,238 @@ export function notify(opt: NotifyOptions): Notifier {
 			return {
 				async send(payload) {
 					console.log("Notifying via Slack: ", payload);
-					const message: SlackMessage = {
-						channel: opt.channel,
-						blocks: [
+					const blocks = [];
+
+					blocks.push({
+						type: "header",
+						text: {
+							type: "plain_text",
+							text: `${payload.triggered ? "🚨" : "✅"}  ${payload.monitor.name}`,
+							emoji: true,
+						},
+					});
+
+					// Add environment and service details
+					const envSection = {
+						type: "section",
+						fields: [
 							{
-								type: "section",
-								text: {
-									type: "plain_text",
-									text: payload.triggered
-										? "🚨 Monitor triggered"
-										: "✅ Monitor resolved",
-								},
+								type: "mrkdwn",
+								text: `*Project*\n<https://railway.com/project/${env.RAILWAY_PROJECT_ID}|${env.RAILWAY_PROJECT_NAME}>`,
+							},
+							{
+								type: "mrkdwn",
+								text: `*Environment*\n<https://railway.com/project/${env.RAILWAY_PROJECT_ID}?environmentId=${payload.monitor.source.environment.id}|${payload.monitor.source.environment.name}>`,
 							},
 						],
-						username: "monirail",
-						icon_url:
-							"https://raw.githubusercontent.com/jaredLunde/monirail/refs/heads/main/assets/monirail.png",
 					};
 
+					// Add services if available
+					if (
+						payload.monitor.source.services &&
+						payload.monitor.source.services.length > 0
+					) {
+						const serviceLinks = payload.monitor.source.services
+							.map(
+								(svc) =>
+									`<https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${svc.serviceId}?environmentId=${payload.monitor.source.environment.id}|${svc.serviceName}>`,
+							)
+							.join(", ");
+
+						envSection.fields.push({
+							type: "mrkdwn",
+							text: `*Services*\n${serviceLinks}`,
+						});
+					}
+
+					// Add type-specific details
 					switch (payload.type) {
 						case "match":
-							message.blocks!.push({
+							blocks.push({
 								type: "section",
 								text: {
 									type: "mrkdwn",
-									text: `*${payload.monitor.name}* found a match`,
+									text: payload.triggered
+										? `Found a match in the last ${payload.monitor.timeWindow} minutes`
+										: `No match found in the last ${payload.monitor.timeWindow} minutes`,
 								},
 							});
+
+							blocks.push(envSection);
+							blocks.push({
+								type: "section",
+								fields: [
+									{
+										type: "mrkdwn",
+										text: `*Time Window*\n${payload.monitor.timeWindow} minutes`,
+									},
+									{
+										type: "mrkdwn",
+										text: `*Filter*\n\`${payload.monitor.filter}\``,
+									},
+								],
+							});
+
+							// Add log link for environment logs
+							if (
+								payload.monitor.source.type === "environment_logs" &&
+								payload.triggered
+							) {
+								const u = new URL(
+									`/project/${env.RAILWAY_PROJECT_ID}/logs?environmentId=${payload.monitor.source.environment.id}`,
+									"https://railway.com",
+								);
+								u.searchParams.set(
+									"filter",
+									createEnvironmentLogFilter(
+										payload.monitor.source.services,
+										payload.monitor.filter,
+									),
+								);
+								u.searchParams.set(
+									"start",
+									payload.startDate.getTime().toString(),
+								);
+								u.searchParams.set("end", payload.endDate.getTime().toString());
+
+								blocks.push({
+									type: "section",
+									text: {
+										type: "mrkdwn",
+										text: `<${u}|View Logs in Railway>`,
+									},
+								});
+							}
 							break;
 
 						case "threshold":
-							message.blocks!.push({
+							let conditionText;
+							switch (payload.monitor.notifyOn) {
+								case "above":
+									conditionText = "was above";
+									break;
+								case "above_or_equal":
+									conditionText = "was above or equal to";
+									break;
+								case "below":
+									conditionText = "was below";
+									break;
+								case "below_or_equal":
+									conditionText = "was below or equal to";
+									break;
+							}
+
+							blocks.push({
 								type: "section",
 								text: {
 									type: "mrkdwn",
-									text: `*${payload.monitor.name}* ${payload.triggered ? "crossed" : "is back to"} threshold`,
+									text: payload.triggered
+										? `Value ${payload.value} ${conditionText} ${payload.threshold}`
+										: `Value ${payload.value} is back to normal`,
 								},
+							});
+
+							blocks.push(envSection);
+							blocks.push({
+								type: "section",
+								fields: [
+									{
+										type: "mrkdwn",
+										text: `*Value*\n${payload.value}`,
+									},
+									{
+										type: "mrkdwn",
+										text: `*Threshold*\n${payload.threshold}`,
+									},
+									{
+										type: "mrkdwn",
+										text: `*Time Window*\n${payload.monitor.timeWindow} minutes`,
+									},
+								],
 							});
 							break;
 
 						case "liveliness":
 							const status = payload.triggered ? "down" : "up";
-							message.blocks!.push({
+							blocks.push({
 								type: "section",
 								text: {
 									type: "mrkdwn",
-									text: `*${payload.monitor.name}* is ${status}`,
+									text: `Service is ${status}`,
 								},
+							});
+
+							let statusInfo = status;
+
+							if (payload.response) {
+								statusInfo = `${payload.response.status} ${payload.response.statusText} in ${payload.duration}ms`;
+							}
+
+							blocks.push(envSection);
+							blocks.push({
+								type: "section",
+								fields: [
+									{
+										type: "mrkdwn",
+										text: `*Status*\n${statusInfo}`,
+									},
+									{
+										type: "mrkdwn",
+										text: `*URL*\n${payload.url}`,
+									},
+								],
 							});
 							break;
 
 						case "custom":
-							message.blocks!.push({
+							blocks.push(envSection);
+							blocks.push({
 								type: "section",
 								text: {
 									type: "mrkdwn",
-									text: `*${payload.monitor.name}* triggered`,
+									text: `*Data*\n\`\`\`json
+${JSON.stringify(payload.data, null, 2)}
+\`\`\``,
 								},
 							});
 							break;
 					}
+
+					// Add timestamp at the bottom
+					blocks.push({
+						type: "context",
+						elements: [
+							{
+								type: "plain_text",
+								text: `Timestamp ${payload.timestamp.toISOString()}`,
+								emoji: true,
+							},
+						],
+					});
+
+					// Add a footer with link to the monitor
+					blocks.push({
+						type: "context",
+						elements: [
+							{
+								type: "image",
+								image_url:
+									"https://raw.githubusercontent.com/jaredLunde/monirail/refs/heads/main/assets/monirail.png",
+								alt_text: "Monirail",
+							},
+							{
+								type: "mrkdwn",
+								text: `<https://railway.com/project/${env.RAILWAY_PROJECT_ID}/service/${env.RAILWAY_SERVICE_ID}?environmentId=${env.RAILWAY_ENVIRONMENT_ID}|View Monitor>`,
+							},
+						],
+					});
+
+					const message = {
+						blocks,
+						username: "Monirail",
+						icon_url:
+							"https://raw.githubusercontent.com/jaredLunde/monirail/refs/heads/main/assets/monirail.png",
+					};
 
 					const res = await retryWithBackoff(() =>
 						fetch(opt.webhookUrl, {
@@ -1446,10 +1657,6 @@ export type NotifyOptions =
 			 * Slack webhook URL
 			 */
 			webhookUrl: string;
-			/**
-			 * The channel to send the notification to
-			 */
-			channel: string;
 	  }
 	| {
 			type: "discord";
