@@ -23,6 +23,8 @@ db.run(`
     triggered BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at INTEGER NOT NULL
   );
+
+  CREATE INDEX IF NOT EXISTS idx_monitor_states_updated_at ON monitor_states(updated_at);
 `);
 
 export const railway = createSdk(
@@ -322,24 +324,20 @@ export function monitor(opt: MonitorOptions): Monitor {
 							averagingWindowSeconds,
 						});
 						console.log("results", results);
+						const values = results.metrics.flatMap((m) => m.values);
 
-						if (!results.metrics || !results.metrics.length) {
+						if (!values.length) {
 							noData = true;
 							value = 0;
 						} else {
-							const values = results.metrics.flatMap((m) => m.values);
-
 							switch (source.aggregate) {
 								case "avg":
 									value =
 										values.reduce((sum, m) => sum + m.value, 0) / values.length;
 									break;
 								case "sum":
-									if (!values.length) {
-										value = 0;
-										break;
-									}
-
+									// Sum is a bit more tricky because we need to account for gaps
+									// caused by application sleeping
 									const sortedValues = [...values].sort((a, b) => a.ts - b.ts);
 
 									// Calculate gaps between consecutive samples
@@ -413,8 +411,8 @@ export function monitor(opt: MonitorOptions): Monitor {
 									// Reasonable bounds check
 									threshold = Math.min(60, Math.max(medianGap * 5, threshold));
 
-									// Calculate GB-minutes, excluding gaps larger than the threshold
-									let gbMinutes = 0;
+									// Calculate usage minutes, excluding gaps larger than the threshold
+									let usageMins = 0;
 									let activeIntervals = 0;
 									let totalActiveMinutes = 0;
 
@@ -424,14 +422,14 @@ export function monitor(opt: MonitorOptions): Monitor {
 										const currentValue = sortedValues[i].value;
 										const deltaMinutes = (nextTs - currentTs) / 60;
 										if (deltaMinutes <= threshold) {
-											gbMinutes += currentValue * deltaMinutes;
+											usageMins += currentValue * deltaMinutes;
 											totalActiveMinutes += deltaMinutes;
 											activeIntervals++;
 										}
 									}
 
 									// Set the calculated value
-									value = gbMinutes;
+									value = usageMins;
 									break;
 								case "max":
 									// For max, find the highest value
@@ -1614,6 +1612,8 @@ async function retryWithBackoff<T>(
 		initialDelay = 1000,
 		maxDelay = 30000,
 		jitterFactor = 0.25,
+		retryableErrors = [429, 500, 502, 503, 504], // Rate limits and server errors
+		nonRetryableErrors = [400, 401, 403, 404], // Client errors typically shouldn't be retried
 	} = options;
 
 	let retries = 0;
@@ -1626,11 +1626,40 @@ async function retryWithBackoff<T>(
 				throw error;
 			}
 
-			console.warn(`Retrying due to error: ${error}`);
+			// Handle fetch errors specifically
+			if (error instanceof Response) {
+				const status = error.status;
+
+				if (nonRetryableErrors.includes(status)) {
+					console.error(
+						`Non-retryable error status ${status}: ${error.statusText || "Unknown"}`,
+					);
+					throw error;
+				}
+
+				if (!retryableErrors.includes(status)) {
+					console.error(
+						`Unexpected error status ${status}: ${error.statusText || "Unknown"}`,
+					);
+					throw error;
+				}
+			} else if (
+				error instanceof Error &&
+				["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED"].includes(error.name)
+			) {
+				// Retry network connectivity errors
+			}
+
+			console.warn(
+				`Retrying due to error (attempt ${retries + 1}/${maxRetries}):`,
+				error,
+			);
+
 			const exponentialDelay = initialDelay * Math.pow(2, retries);
 			const cappedDelay = Math.min(exponentialDelay, maxDelay);
 			const jitter = cappedDelay * jitterFactor * (Math.random() * 2 - 1);
 			const finalDelay = cappedDelay + jitter;
+
 			await new Promise((resolve) => setTimeout(resolve, finalDelay));
 			retries++;
 		}
@@ -1642,6 +1671,8 @@ type RetryWithBackoffOptions = {
 	initialDelay?: number;
 	maxDelay?: number;
 	jitterFactor?: number;
+	retryableErrors?: number[];
+	nonRetryableErrors?: number[];
 };
 
 // For averages use a full window approach
