@@ -173,49 +173,16 @@ export function monitor(opt: MonitorOptions): Monitor {
 					let matches: unknown[] = [];
 
 					if (source.type === "http_logs") {
-						matches = (
-							await Promise.all(
-								services.map(async (service) => {
-									const deploys = (
-										await railway.listDeployments({
-											environmentId: environment.id,
-											serviceId: service.serviceId,
-											status: {
-												in: [
-													DeploymentStatus.Removed,
-													DeploymentStatus.Crashed,
-													DeploymentStatus.Success,
-													DeploymentStatus.Sleeping,
-												],
-											},
-											first: 10,
-										})
-									).deployments.edges
-										.filter(
-											(deploy) =>
-												[
-													DeploymentStatus.Success,
-													DeploymentStatus.Sleeping,
-												].includes(deploy.node.status as any) ||
-												new Date(deploy.node.updatedAt) > past,
-										)
-										.map((deploy) => deploy.node);
-
-									const results = await Promise.all(
-										deploys.map((deploy) => {
-											return source.fetch({
-												filter: opt.filter,
-												deploymentId: deploy.id,
-												startDate: past.toJSON(),
-												endDate: now.toJSON(),
-												limit: 1,
-											});
-										}),
-									);
-									return results.flatMap((result) => result.httpLogs);
-								}),
-							)
-						).flat();
+						matches = await source
+							.fetch({
+								filter: opt.filter,
+								startDate: past.toJSON(),
+								endDate: now.toJSON(),
+								limit: MAX_LOG_LIMIT,
+							})
+							.then((results) => {
+								return results.flatMap((r) => r.httpLogs);
+							});
 					} else {
 						const results = await source.fetch({
 							filter: createEnvironmentLogFilter(services, opt.filter),
@@ -305,6 +272,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 				notifyOn: opt.notifyOn,
 				notifyOnNoData: opt.notifyOnNoData,
 				timeWindow: timeWindow2,
+				filter: "filter" in opt ? opt.filter : undefined,
 				async check() {
 					const source = await opt.source;
 					const environment = source.environment;
@@ -325,11 +293,32 @@ export function monitor(opt: MonitorOptions): Monitor {
 						notifyOnNoData: opt.notifyOnNoData,
 					});
 
-					if (source.type !== "metrics") {
+					if (source.type !== "metrics" && "filter" in opt) {
 						if (threshold > MAX_LOG_LIMIT) {
 							throw new Error(
 								`${opt.name}: threshold cannot be greater than ${MAX_LOG_LIMIT}`,
 							);
+						}
+
+						if (source.type === "environment_logs") {
+							const results = await source.fetch({
+								filter: createEnvironmentLogFilter(services, opt.filter),
+								environmentId: environment.id,
+								startDate: past.toJSON(),
+								endDate: now.toJSON(),
+								limit: threshold,
+							});
+
+							value = results.environmentLogs.length;
+						} else {
+							const results = await source.fetch({
+								filter: opt.filter,
+								startDate: past.toJSON(),
+								endDate: now.toJSON(),
+								limit: threshold,
+							});
+
+							value = results.flatMap((r) => r.httpLogs).length;
 						}
 					} else if (source.type === "metrics") {
 						// Calculate appropriate sample rate and averaging window based on aggregation type
@@ -735,9 +724,8 @@ export type MonitorOptions = {
 	 * Aggregate event data over time. When the results of a metric cross a threshold,
 	 * send alert.
 	 */
-	| {
+	| ({
 			type: "threshold";
-			source: Promise<SourceMetrics | SourceEnvironmentLogs | SourceHttpLogs>;
 			value: number;
 			notifyOn: "above" | "above_or_equal" | "below" | "below_or_equal";
 			/**
@@ -749,7 +737,17 @@ export type MonitorOptions = {
 			 * @default 5
 			 */
 			timeWindow?: number;
-	  }
+	  } & (
+			| {
+					source: Promise<SourceMetrics>;
+			  }
+			| {
+					source: Promise<
+						SourceMetrics | SourceEnvironmentLogs | SourceHttpLogs
+					>;
+					filter: string;
+			  }
+	  ))
 	| {
 			type: "availability";
 			source: Promise<SourceService>;
@@ -802,6 +800,7 @@ export type MonitorThreshold = BaseMonitor & {
 	 * @default 5
 	 */
 	timeWindow: number;
+	filter?: string;
 };
 export type MonitorAvailability = BaseMonitor & {
 	type: "availability";
@@ -880,8 +879,46 @@ export async function source<O extends SourceOptions>(
 				type: "http_logs",
 				environment,
 				services,
-				fetch(input: ListHttpLogsQueryVariables): Promise<ListHttpLogsQuery> {
-					return railway.listHttpLogs(input);
+				async fetch(
+					input: ListHttpLogsQueryVariables,
+				): Promise<ListHttpLogsQuery[]> {
+					const deploys = (
+						await railway.listDeployments({
+							environmentId: environment.id,
+							serviceId: services[0].serviceId,
+							status: {
+								in: [
+									DeploymentStatus.Removed,
+									DeploymentStatus.Crashed,
+									DeploymentStatus.Success,
+									DeploymentStatus.Sleeping,
+								],
+							},
+							first: 10,
+						})
+					).deployments.edges
+						.filter(
+							(deploy) =>
+								[DeploymentStatus.Success, DeploymentStatus.Sleeping].includes(
+									deploy.node.status as any,
+								) ||
+								new Date(deploy.node.updatedAt) > new Date(input.startDate),
+						)
+						.map((deploy) => deploy.node);
+
+					const results = await Promise.all(
+						deploys.map((deploy) => {
+							return railway.listHttpLogs({
+								filter: input.filter,
+								deploymentId: deploy.id,
+								startDate: input.startDate,
+								endDate: input.endDate,
+								limit: 1,
+							});
+						}),
+					);
+
+					return results;
 				},
 			};
 
@@ -958,7 +995,9 @@ export type SourceEnvironmentLogs = BaseSource & {
 };
 export type SourceHttpLogs = BaseSource & {
 	type: "http_logs";
-	fetch(input: ListHttpLogsQueryVariables): Promise<ListHttpLogsQuery>;
+	fetch(
+		input: Omit<ListHttpLogsQueryVariables, "deploymentId">,
+	): Promise<ListHttpLogsQuery[]>;
 };
 export type SourceMetrics = BaseSource & {
 	type: "metrics";
