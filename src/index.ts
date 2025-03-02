@@ -178,7 +178,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 								filter: opt.filter,
 								startDate: past.toJSON(),
 								endDate: now.toJSON(),
-								limit: MAX_LOG_LIMIT,
+								limit: 1,
 							})
 							.then((results) => {
 								return results.flatMap((r) => r.httpLogs);
@@ -263,6 +263,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 		case "threshold":
 			const threshold = opt.value ?? 1;
 			const timeWindow2 = opt.timeWindow ?? 5;
+			const notifyOnNoData = opt.notifyOnNoData ?? true;
 			return {
 				type: "threshold",
 				name: opt.name,
@@ -270,7 +271,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 				source: opt.source,
 				value: opt.value,
 				notifyOn: opt.notifyOn,
-				notifyOnNoData: opt.notifyOnNoData,
+				notifyOnNoData,
 				timeWindow: timeWindow2,
 				filter: "filter" in opt ? opt.filter : undefined,
 				async check() {
@@ -290,7 +291,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 						threshold,
 						timeWindow: timeWindow2,
 						notifyOn: opt.notifyOn,
-						notifyOnNoData: opt.notifyOnNoData,
+						notifyOnNoData,
 					});
 
 					if (source.type !== "metrics" && "filter" in opt) {
@@ -306,7 +307,9 @@ export function monitor(opt: MonitorOptions): Monitor {
 								environmentId: environment.id,
 								startDate: past.toJSON(),
 								endDate: now.toJSON(),
-								limit: threshold,
+								limit: opt.notifyOn.startsWith("above")
+									? MAX_LOG_LIMIT
+									: threshold,
 							});
 
 							value = results.environmentLogs.length;
@@ -315,7 +318,9 @@ export function monitor(opt: MonitorOptions): Monitor {
 								filter: opt.filter,
 								startDate: past.toJSON(),
 								endDate: now.toJSON(),
-								limit: threshold,
+								limit: opt.notifyOn.startsWith("above")
+									? MAX_LOG_LIMIT
+									: threshold,
 							});
 
 							value = results.flatMap((r) => r.httpLogs).length;
@@ -473,7 +478,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 							break;
 					}
 
-					if (noData && opt.notifyOnNoData) {
+					if (noData && notifyOnNoData) {
 						triggered = true;
 					}
 
@@ -486,7 +491,7 @@ export function monitor(opt: MonitorOptions): Monitor {
 						threshold,
 						triggered,
 						notifyOn: opt.notifyOn,
-						notifyOnNoData: opt.notifyOnNoData,
+						notifyOnNoData,
 						timeWindow: timeWindow2,
 					});
 
@@ -731,7 +736,7 @@ export type MonitorOptions = {
 			/**
 			 * Whether to notify when there is no data returned from the source
 			 */
-			notifyOnNoData: boolean;
+			notifyOnNoData?: boolean;
 			/**
 			 * The window of time to aggregate over in minutes
 			 * @default 5
@@ -1024,7 +1029,7 @@ export function notify(opt: NotifyOptions): Notifier {
 		case "webhook":
 			return {
 				async send(payload) {
-					console.log("Notifying via webhook: ", payload);
+					log.debug("Notifying via webhook", payload);
 					const res = await fetch(opt.url, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
@@ -1040,7 +1045,7 @@ export function notify(opt: NotifyOptions): Notifier {
 		case "discord":
 			return {
 				async send(payload) {
-					console.log("Notifying via Discord: ", payload);
+					log.debug("Notifying via Discord", payload);
 					let color = payload.triggered ? 0xff0000 : 0x00ff00;
 					const message: DiscordMessage = {
 						username: "Monirail",
@@ -1281,7 +1286,7 @@ export function notify(opt: NotifyOptions): Notifier {
 								if (res.status > 500) {
 									throw new Error(`Discord notification failed: ${res.status}`);
 								} else {
-									console.error(
+									log.error(
 										`Discord notification failed: ${res.status} ${res.statusText}`,
 									);
 								}
@@ -1295,7 +1300,7 @@ export function notify(opt: NotifyOptions): Notifier {
 		case "slack":
 			return {
 				async send(payload) {
-					console.log("Notifying via Slack: ", payload);
+					log.debug("Notifying via Slack", payload);
 					const blocks = [];
 
 					blocks.push({
@@ -1546,7 +1551,7 @@ ${JSON.stringify(payload.data, null, 2)}
 		case "pagerduty":
 			return {
 				async send(payload) {
-					console.log("Notifying via PagerDuty: ", payload);
+					log.debug("Notifying via PagerDuty", payload);
 					let summary: string;
 					let customDetails: Record<string, unknown> | undefined;
 					const triggeredText = payload.triggered ? "triggered" : "resolved";
